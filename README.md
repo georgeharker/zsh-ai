@@ -1,180 +1,300 @@
-zsh-llm
-=======
+zsh-ai
+======
 
-OpenAI-compatible LLM integration for zsh. Two independent capabilities,
-both opt-in:
+OpenAI-compatible LLM integration for zsh. Four keybind-driven workflows
+that share one async scratchpad, all rendered inline above the prompt.
 
-1. **Interactive Q&A from the prompt** — `:` / `::` prefixes, or a keybind:
-
-   ```
-   : how do I find files modified in the last 24h
-   :: now exclude hidden files and sort by size
-   ```
-
-2. **Inline completion as a `zsh-autosuggestions` strategy** — grounds
-   the LLM on the buffer plus candidates harvested from other autosuggest
-   strategies (history, `match_prev_cmd`, or
-   [`zsh-contextual-history`][zch]'s scoped strategies when installed):
-
-   ```zsh
-   ZSH_AUTOSUGGEST_STRATEGY=(llm)
-   ```
+| Keybind | Mode      | What it does                                                      |
+|---------|-----------|-------------------------------------------------------------------|
+| `^Xa`   | ask       | Multi-line ask → N candidate shell commands → accept replaces BUFFER |
+| `^Xm`   | modify    | Take current BUFFER → N rewrites per your instruction → accept replaces BUFFER |
+| `^Xq`   | question  | Freeform question → answer printed below the prompt (glow if installed) |
+| `^Xi`   | FIM       | Fill-in-the-middle completion at the cursor                       |
 
 Backend is any OpenAI-compatible HTTP endpoint — llama.cpp's `--server`,
 ollama (`/v1`), LM Studio, vLLM, OpenRouter, etc. **Running the model is
 out of scope.** This plugin only talks to an endpoint you've already
 brought up.
 
-[zch]: ../zsh-contextual-history
-
 Requirements
 ------------
 
-- `zsh` (5.x+)
+- `zsh` 5.x+
 - `curl`
-- `jq` recommended for JSON parsing; `python3` works as a fallback;
-  one of the two must be on `$PATH`
-- `glow` optional for markdown rendering of Q&A responses (auto-detected)
+- `jq` recommended for JSON parsing; `python3` works as a fallback
+- `glow` optional — used by `^Xq` to render markdown answers (auto-detected)
 
 Install
 -------
 
 ```zsh
 # ~/.zshrc
-source /path/to/zsh-llm/zsh-llm.plugin.zsh
+source /path/to/zsh-ai/zsh-ai.plugin.zsh
 ```
 
-If you also want the CLI:
+CLI launcher (optional):
 
 ```zsh
-export PATH="/path/to/zsh-llm/bin:$PATH"
+export PATH="/path/to/zsh-ai/bin:$PATH"
 ```
 
 Configuration
 -------------
 
 All configuration is via `zstyle`. Set values **before** sourcing the
-plugin — widget registration reads zstyle at source time.
+plugin — widgets read zstyle at source time.
 
 ### Shared
 
 ```zsh
-zstyle ':zsh-llm:*' endpoint     'http://localhost:11434/v1'  # ollama default
-zstyle ':zsh-llm:*' api_key      ''                            # empty for local servers
-zstyle ':zsh-llm:*' http_timeout 60
+zstyle ':zsh-ai:*' endpoint     'http://localhost:11434/v1'  # ollama default
+zstyle ':zsh-ai:*' api_key      ''                            # empty for local servers
+zstyle ':zsh-ai:*' api_key_env  'OPENAI_API_KEY'              # env-var indirection
+zstyle ':zsh-ai:*' http_timeout 60
 ```
 
-### Q&A (`:` / `::`)
+If `api_key_env` is set, its value is the **name** of an environment
+variable from which the key is read at request time — keeps secrets out
+of shell config. Per-feature context (`scratch`, `fim`) overrides the
+shared `*` for `endpoint`, `api_key`, etc., so you can point FIM at a
+fast local code model while ask/question goes to a larger remote one.
+
+### Scratchpad (`^Xa` ask, `^Xm` modify, `^Xq` question)
 
 ```zsh
-zstyle ':zsh-llm:qa' model         'qwen2.5-coder:7b-instruct'
-zstyle ':zsh-llm:qa' max_tokens    1024
-zstyle ':zsh-llm:qa' temperature   0.2
-zstyle ':zsh-llm:qa' history_turns 5         # follow-up context depth
-zstyle ':zsh-llm:qa' spinner       yes
-zstyle ':zsh-llm:qa' formatter     'glow -'   # auto-detected if unset
+zstyle ':zsh-ai:scratch' enabled         yes
+zstyle ':zsh-ai:scratch' model           'qwen2.5-coder:7b-instruct'
+zstyle ':zsh-ai:scratch' max_tokens      200
+zstyle ':zsh-ai:scratch' temperature     0.2
+zstyle ':zsh-ai:scratch' candidates      3            # how many to show in ask/modify
 
-# Trigger modes — independent. Enable either, both, or neither.
-zstyle ':zsh-llm:qa' prefix_widget    yes      # `:` / `::` at accept-line
-zstyle ':zsh-llm:qa' keybind_widget   no       # inline prompt on keypress
-zstyle ':zsh-llm:qa' ask_keybind      '^Xa'
-zstyle ':zsh-llm:qa' followup_keybind '^XA'
+# Keybinds (override if they clash with your setup):
+zstyle ':zsh-ai:scratch' keybind          '^Xa'        # ask mode
+zstyle ':zsh-ai:scratch' modify_keybind   '^Xm'
+zstyle ':zsh-ai:scratch' question_keybind '^Xq'
+
+# Accept behavior for ask/modify:
+#   no   (default) — chosen command goes into next prompt for editing
+#   yes            — chosen command executes immediately
+zstyle ':zsh-ai:scratch' accept_runs no
+
+# Optional system-prompt overrides (defaults are zsh-aware, terse):
+zstyle ':zsh-ai:scratch' system_prompt          '...'   # ask mode
+zstyle ':zsh-ai:scratch' modify_system_prompt   '...'   # modify mode
+zstyle ':zsh-ai:scratch' question_system_prompt '...'   # question mode
 ```
 
-#### Why `:` and `::`?
+### Reasoning models (Qwen3, deepseek-r1, etc.)
 
-`:` is the zsh no-op builtin — if the widget ever doesn't fire (script
-context, plugin not yet loaded, edge-case widget chain), `: foo` is a
-harmless successful no-op. Compare to `?`, which would produce a glob
-error in the same situation.
+Two independent axes: **whether the model thinks** (server-side flag),
+and **whether you see the thinking** (display).
 
-### Autosuggest strategy
+**Server-side toggle** — tri-state, default is "let server decide":
 
 ```zsh
-zstyle ':zsh-llm:autosuggest' enabled            yes
-zstyle ':zsh-llm:autosuggest' model              'qwen2.5-coder:1.5b'
-zstyle ':zsh-llm:autosuggest' max_tokens         40
-zstyle ':zsh-llm:autosuggest' temperature        0.1
-zstyle ':zsh-llm:autosuggest' min_length         3      # skip short buffers
-zstyle ':zsh-llm:autosuggest' debounce_ms        150    # wait for typing to settle; 0 disables
-zstyle ':zsh-llm:autosuggest' history_lines      10
-zstyle ':zsh-llm:autosuggest' harvest_filesystem yes
-zstyle ':zsh-llm:autosuggest' use_fim            no     # set yes for llama.cpp
+# Global default for all scratch modes
+zstyle ':zsh-ai:scratch' enable_thinking no     # disable Qwen3 <think>
+zstyle ':zsh-ai:scratch' enable_thinking yes    # explicit enable
+
+# Per-mode overrides (more specific wins over the global one above)
+zstyle ':zsh-ai:scratch' enable_thinking_ask      yes
+zstyle ':zsh-ai:scratch' enable_thinking_modify   no
+zstyle ':zsh-ai:scratch' enable_thinking_question yes
 ```
 
-Then opt in — recommended composition is **mode A**: let
-zsh-autosuggestions' own cascade run, with `llm` as the last fallback.
-Upstream strategies get instant prefix matches; the LLM only runs when
-they've all returned empty:
+Sent as `chat_template_kwargs.enable_thinking` in the request body —
+vLLM and recent llama.cpp honour it; other servers ignore the field.
+
+Also settable on `:zsh-ai:fim`.
+
+**Interactive override — Alt-T** during any scratchpad session cycles
+the override for the **next** call only: `auto → on → off → auto`.
+Current state is shown in the instruction-line hint:
+```
+       [enter: ask · esc: cancel · alt-t: thinking:on]
+```
+After the call fires, the override resets to `auto`.
+
+**Display of `<think>…</think>` blocks** — independent of whether the
+model produces them:
 
 ```zsh
-ZSH_AUTOSUGGEST_USE_ASYNC=1                                # strongly recommended
-ZSH_AUTOSUGGEST_STRATEGY=(contextual_history match_prev_cmd llm)
+zstyle ':zsh-ai:scratch' show_thinking       yes   # default: no
+zstyle ':zsh-ai:scratch' thinking_max_lines  6     # cap in ask/modify UI
 ```
 
-Or, if you don't have zsh-contextual-history:
+In **ask / modify** mode: `<think>` is stripped from the candidate parser
+(prevents reasoning text from being treated as commands), and if
+`show_thinking=yes` the captured reasoning is rendered dimmed above the
+candidate list, each line prefixed with 💭.
+
+In **question** mode: `<think>` blocks become markdown blockquotes
+prefixed with `> 💭 *thinking…*` so glow renders them as a distinct
+section. With `show_thinking=no` (default), they're stripped.
+
+### Question mode — streaming and formatter
+
+The freeform answer of `^Xq` is rendered through a formatter (default
+`glow`, auto-detected). Configurable:
 
 ```zsh
-ZSH_AUTOSUGGEST_STRATEGY=(history match_prev_cmd llm)
+zstyle ':zsh-ai:scratch' formatter 'glow -'    # default if glow installed
+zstyle ':zsh-ai:scratch' formatter 'mdcat'     # alternate renderer
+zstyle ':zsh-ai:scratch' formatter 'none'      # no rendering — raw output
 ```
 
-The `llm` strategy is fully stand-alone — it doesn't know or care about
-the other strategies in the cascade. They run first and short-circuit
-when they have a match; we only run when there's no match to short-circuit.
+The formatter is a shell command; we pipe answer text into it.
 
-### Composition with `zsh-contextual-history`
+**Streaming**: opt in to stream the answer as it generates:
 
-If [`zsh-contextual-history`][zch] is loaded, the `llm` strategy picks
-up its toggle state automatically when harvesting recent history:
+```zsh
+zstyle ':zsh-ai:scratch' stream_question     yes   # default: no
+zstyle ':zsh-ai:scratch' stream_post_render  yes   # default: yes
+```
 
-- The context toggle (^G by default) scopes the recent-history harvest
-  to the per-directory / per-project / global ring you've selected —
-  because `$history` IS the active ring, swapped on toggle.
-- The local-history toggle filters the harvest to commands typed in
-  this shell only — we honour `_context_history_local_mode` and walk
-  through `_context_history_local_texts`.
-- Toggling either axis re-runs `autosuggest-fetch`, so the visible
-  LLM suggestion refreshes immediately under the new scope.
+Two behaviors depending on whether a formatter is active:
 
-No explicit configuration needed — just have both plugins sourced.
+| stream_question | formatter      | what you see                       |
+|-----------------|----------------|------------------------------------|
+| no              | glow / other   | wait for full response → rendered  |
+| no              | none           | wait for full response → raw       |
+| yes             | glow / other   | spinner during call → rendered     |
+| yes             | none           | raw text streams as it generates   |
 
-How the autosuggest strategy decides
-------------------------------------
+(Raw markdown source is hidden when a formatter is configured — there's
+no point seeing it twice. Set `stream_post_render no` to opt out and
+see only the live stream, no final render.)
 
-Stand-alone — no knowledge of other strategies. When invoked:
+### FIM (`^Xi`)
 
-1. Apply `min_length` gate; bail if buffer is too short.
-2. Debounce: stake a (timestamp, buffer) claim, sleep `debounce_ms`,
-   re-check. If a newer keystroke arrived during the wait, abort silently.
-3. Harvest grounding context:
-   - Recent N lines from `$history` (toggle-aware as above)
-   - Filesystem glob matches for the last token in the buffer
-   - `$PWD`
-4. Send to `/v1/completions` with `stop=\n` and small `max_tokens`.
-   Return the model's continuation as the suggestion.
+```zsh
+zstyle ':zsh-ai:fim' enabled     yes
+zstyle ':zsh-ai:fim' model       'qwen2.5-coder:1.5b'
+zstyle ':zsh-ai:fim' max_tokens  60
+zstyle ':zsh-ai:fim' temperature 0.1
+zstyle ':zsh-ai:fim' keybind     '^Xi'
 
-Servers that honour the `suffix` parameter (notably llama.cpp) can do
-real FIM when `use_fim yes` is set and the cursor is mid-buffer. Ollama
-and most others ignore `suffix`; the strategy falls back to plain
-continuation in that case.
+# Stop tokens (multi-value zstyle preferred):
+zstyle ':zsh-ai:fim' stop_tokens $'\n'
+```
+
+For chat-trained code models that need FIM tokens (Qwen-Coder, CodeLlama,
+DeepSeek-Coder, StarCoder), set the template trio — see comments at the
+end of `lib/fim.zsh` for the exact tokens per model.
+
+How each mode behaves
+---------------------
+
+### `^Xa` — ask
+
+```
+ask │
+       [enter: ask · esc: cancel]
+```
+
+Type a natural-language description, Enter. Spinner runs while the call
+is in flight. On completion you see a selectable list:
+
+```
+ask │ list files modified today
+     ·
+     ▶ find . -mtime -1 -type f
+       fd --changed-within 1day
+       ls -lt | head
+       [↑/↓: select · enter: accept · ^G: regen · ^X^X: edit · esc: cancel]
+```
+
+Arrow keys / Tab navigate. Enter accepts the highlighted candidate into
+your BUFFER (no execution unless `accept_runs=yes`). `^G` re-rolls the
+candidates with the same instruction. `^X^X` lets you edit the
+instruction without losing the candidates. `esc` cancels and restores
+whatever you had typed before.
+
+### `^Xm` — modify
+
+Same UI, but the current BUFFER is the **target** to rewrite. Shown as
+context above the instruction line:
+
+```
+modify │ find . -name '*.py' -mtime -30
+       ▷ exclude tests dirs
+         ·
+         [enter: rewrite · esc: cancel]
+```
+
+Submit → LLM gets both the original command and your instruction, returns
+rewrites. Accept replaces BUFFER.
+
+If BUFFER is empty when you press `^Xm`, the widget no-ops with a
+message rather than open uselessly.
+
+### `^Xq` — question
+
+Same instruction prompt, but the response is a freeform answer (not a
+list of commands). The answer is printed below the prompt, rendered
+through `glow` (or whatever `formatter` zstyle is set to):
+
+```
+?  why does ldd fail on macOS
+
+ldd is glibc-specific. On macOS, use `otool -L` or `dyld_info` instead.
+For libraries inside an app bundle: `otool -L MyApp.app/Contents/MacOS/MyApp`.
+```
+
+With `stream_question=yes`, the answer streams as it's generated. When a
+formatter is also configured, the raw stream is hidden behind a spinner
+(`⠋ generating…`) and only the rendered output is shown; otherwise raw
+text streams to the terminal as it arrives. See the
+*Question mode — streaming and formatter* config section below.
+
+Whatever BUFFER held before `^Xq` is pushed back to the next prompt
+(via `print -z`) so your in-progress work isn't lost.
+
+### `^Xi` — FIM
+
+Snapshots LBUFFER (before cursor) and RBUFFER (after cursor), sends to
+the completions endpoint, splices the returned text in at the cursor.
+Two modes — see `lib/fim.zsh` for the FIM-token templating details.
 
 CLI
 ---
 
 ```
-zsh-llm how do I list open ports on macOS
-zsh-llm followup only show listening ports
-zsh-llm reset
+zsh-ai <question>          one-shot chat (prints answer)
+zsh-ai -h | help           usage
 ```
 
-The CLI uses the same Q&A backend as the prompt widgets.
+For shell-scripting use. Same backend, no widgets, no scratchpad. Reads
+`:zsh-ai:scratch` model and endpoint.
 
-Files
+Architecture notes
+------------------
+
+- **Async**: a backgrounded subshell runs the LLM call; a heartbeat
+  process writes a fifo byte every 100ms. ZLE wakes via `zle -F` on the
+  fifo, polls for a sentinel file. No coproc (avoids conflicts with
+  other plugins that also use `&p`).
+- **Single keymap**: `zsh-ai-scratch`, state-aware widgets. The session
+  starts in instruction state and transitions to select state in place —
+  no `zle -K` mid-session (which doesn't reliably take effect from
+  `zle -F` callback context).
+- **Hook discipline**: `line-pre-redraw` is attached at scratchpad
+  open and detached at accept/cancel — we're not in any other plugin's
+  render chain outside our own sessions.
+- **autosuggest coordination**: if `zsh-autosuggestions` is loaded, we
+  snapshot its `_ZSH_AUTOSUGGEST_DISABLED` state at scratchpad open and
+  restore it on exit. Only flipped if it was on; never enabled if you
+  had it off.
+
+Debug
 -----
 
-| Path                        | Purpose                                  |
-|-----------------------------|------------------------------------------|
-| `~/.zsh-llm-history`        | Q&A conversation history (plain text)    |
+```zsh
+export ZSH_AI_DEBUG=1
+export ZSH_AI_DEBUG_LOG=/tmp/zsh-ai.log
+# trigger the widget
+tail -f /tmp/zsh-ai.log
+```
 
 License
 -------

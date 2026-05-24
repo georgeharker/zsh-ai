@@ -1,0 +1,11 @@
+#!/usr/bin/env zsh
+# zsh-ai — CLI launcher. Sources the plugin and dispatches to its function.
+
+emulate -L zsh
+
+# Resolve plugin root from this script's location: <root>/bin/zsh-ai
+SCRIPT_DIR="${0:A:h}"
+PLUGIN_ROOT="${SCRIPT_DIR:h}"
+
+source "$PLUGIN_ROOT/zsh-ai.plugin.zsh"
+zsh-ai "$@"
