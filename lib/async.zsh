@@ -70,13 +70,16 @@ _zsh_ai_async_run() {
     # into outfile (the callback reads it via REPLY). Stderr is dropped
     # — bridge errors land on the user's terminal anyway through stderr
     # passthrough at the parent shell level.
-    ( "$@" > "$outfile" 2>/dev/null; touch "$donefile" ) &!
+    # Bridge stderr is NOT suppressed — connection errors, model
+    # failures etc. should reach the user's terminal so they know why
+    # the spinner finished with no result.
+    ( "$@" > "$outfile"; touch "$donefile" ) &!
     local pid=$!
 
     # Heartbeat fifo. RW open with `<>` so we don't block waiting for
     # the writer; then unlink the path — fd survives.
     local tick_pipe=$(mktemp -u -t zsh-ai-tick.XXXXXX)
-    mkfifo "$tick_pipe" 2>/dev/null
+    mkfifo "$tick_pipe"
     local tick_fd
     exec {tick_fd}<> "$tick_pipe"
     rm -f "$tick_pipe"
@@ -109,7 +112,7 @@ _zsh_ai_async_run() {
     fi
 
     _zsh_ai_async_render_spinner
-    zle -R 2>/dev/null
+    zle -R
     return 0
 }
 
@@ -126,15 +129,20 @@ _zsh_ai_async_cancel() {
     local outfile=$_zsh_ai_async_outfile
     local donefile=$_zsh_ai_async_donefile
 
-    kill $pid  2>/dev/null
-    kill $tpid 2>/dev/null
-    zle -F -w $tfd 2>/dev/null
-    exec {tfd}<&- 2>/dev/null
-    if (( efd > 0 )); then
-        zle -F -w $efd 2>/dev/null
-        exec {efd}<&- 2>/dev/null
-    fi
-    rm -f "$outfile" "$donefile" 2>/dev/null
+    # Guard each tear-down step rather than suppressing errors:
+    # if our pid/fd tracking has lost sync with reality we want to
+    # see the error, not silently muddle through.
+    (( pid > 0 ))  && kill $pid
+    (( tpid > 0 )) && kill $tpid
+    (( tfd > 0 ))  && { zle -F -w $tfd; exec {tfd}<&-; }
+    # CRITICAL: do NOT add `2>/dev/null` to bare `exec` lines that
+    # modify file descriptors. `exec` with no command applies its
+    # redirections to the CURRENT SHELL permanently — so combining
+    # the fd-close with `2>/dev/null` would redirect the interactive
+    # shell's stderr to /dev/null forever, breaking unrelated TUIs
+    # (e.g. textual apps that probe stderr.isatty()).
+    (( efd > 0 ))  && { zle -F -w $efd; exec {efd}<&-; }
+    rm -f "$outfile" "$donefile"
 
     _zsh_ai_async_reset_state
     return 0
@@ -164,7 +172,7 @@ _zsh_ai_async_complete() {
     local callback="$_zsh_ai_async_callback"
 
     REPLY="$(<$outfile)"
-    rm -f "$outfile" "$_zsh_ai_async_donefile" 2>/dev/null
+    rm -f "$outfile" "$_zsh_ai_async_donefile"
 
     # Mark "not in flight" so callback's state-aware widgets see the
     # post-completion world.
@@ -189,15 +197,18 @@ _zsh_ai_async_on_tick() {
 
     if [[ -n "$_zsh_ai_async_donefile" && -f "$_zsh_ai_async_donefile" ]]; then
         _zsh_ai_async_complete
-        zle -R 2>/dev/null    # flush callback's display change
+        zle -R   # flush callback's display change
         # Tear down AFTER flush.
-        kill $_zsh_ai_async_tick_pid 2>/dev/null
-        zle -F -w $fd 2>/dev/null
-        exec {fd}<&- 2>/dev/null
+        (( _zsh_ai_async_tick_pid > 0 )) && kill $_zsh_ai_async_tick_pid
+        zle -F -w $fd
+        # See note in _zsh_ai_async_cancel — never combine `2>/dev/null`
+        # with a bare `exec {fd}<&-`; it leaks the redirect into the
+        # parent shell.
+        exec {fd}<&-
         if (( _zsh_ai_async_extra_fd > 0 )); then
             local efd=$_zsh_ai_async_extra_fd
-            zle -F -w $efd 2>/dev/null
-            exec {efd}<&- 2>/dev/null
+            zle -F -w $efd
+            exec {efd}<&-
             _zsh_ai_async_extra_fd=0
             _zsh_ai_async_extra_handler=""
         fi
@@ -221,7 +232,7 @@ _zsh_ai_async_on_tick() {
     else
         _zsh_ai_async_render_spinner
     fi
-    zle -R 2>/dev/null
+    zle -R
     return 0
 }
 

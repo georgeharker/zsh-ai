@@ -21,9 +21,36 @@
 # to a remembered "before" keymap — simpler, no state to leak across
 # accept-line boundaries.
 
-# sysread is in zsh/system. Load eagerly here — the watcher widget
-# can't load it lazily (would race against the first wake).
-zmodload zsh/system 2>/dev/null
+# sysread is in zsh/system. We use it in the fifo-watcher widget;
+# without it the watcher errors on every tick. Load eagerly and let
+# any failure surface — a missing zsh/system module means the user
+# has a broken zsh install we can't paper over.
+zmodload zsh/system
+
+# ── Default system prompts ──────────────────────────────────────────────────
+# Lifted to top-of-file constants so they're easy to edit / tune without
+# digging into the kick-off path. Each is overridable via zstyle:
+#   :zsh-ai:scratch system_prompt           (ask mode default)
+#   :zsh-ai:scratch modify_system_prompt
+#   :zsh-ai:scratch question_system_prompt
+#
+# `${n_candidates}` in the ask/modify prompts is resolved at use site
+# from `:zsh-ai:scratch candidates` (default 3).
+typeset -g _ZSH_AI_DEFAULT_ASK_SYSTEM='You are a zsh command-line assistant. The user describes a task; output ONLY shell commands that accomplish it.
+Rules:
+- Output up to ${n_candidates} candidate commands, most likely / best first.
+- One command per line. No numbering, no bullets, no commentary, no markdown, no code fences.
+- If a command needs multiple steps, fit it on one line with ; or && chains.
+- No leading/trailing whitespace. No blank lines between candidates.'
+
+typeset -g _ZSH_AI_DEFAULT_MODIFY_SYSTEM='You are a zsh command-line assistant. The user has typed a shell command and wants it rewritten according to an instruction. Output ONLY shell commands.
+Rules:
+- Output up to ${n_candidates} rewrites of the original command, best first.
+- One command per line. No numbering, bullets, commentary, markdown, or fences.
+- Preserve the user'\''s intent; only change what the instruction asks for.
+- No leading/trailing whitespace. No blank lines.'
+
+typeset -g _ZSH_AI_DEFAULT_QUESTION_SYSTEM="You are a helpful shell / general-purpose assistant. Answer the user's question. Be concise. Use markdown code fences for any commands. Avoid pre-amble."
 
 # ── State globals ───────────────────────────────────────────────────────────
 typeset -g  _zsh_ai_scratch_active=0
@@ -38,9 +65,7 @@ typeset -g  _zsh_ai_scratch_saved_buffer=""
 typeset -g  _zsh_ai_scratch_saved_cursor=0
 typeset -g  _zsh_ai_scratch_message=""         # transient status message (e.g. "[no candidates]")
 typeset -g  _zsh_ai_scratch_thinking_override=""  # "" = use config, "true" / "false" = force for next call
-typeset -g  _zsh_ai_scratch_thinking_content=""   # accumulated thinking text (appended live as bytes arrive)
-typeset -g  _zsh_ai_scratch_thinking_fifo=""      # path to fifo the bridge writes to (unlinked on cleanup)
-typeset -gi _zsh_ai_scratch_thinking_fd=0         # RW-opened fd on the fifo; zle -F watcher reads from here
+typeset -g  _zsh_ai_scratch_thinking_log=""       # persistent thinking-output log file (kept for relaunch; rm'd on session end)
 
 # ── Display builder + applier ───────────────────────────────────────────────
 # Single-path rendering: walks current state, emits text + style segments
@@ -72,14 +97,11 @@ _zsh_ai_scratch_build_display() {
     local SEL='fg=green,bold'
     local MEMO='memo=zsh_ai_scratch'
 
-    local async=0
-    _zsh_ai_async_running 2>/dev/null && async=1
-
-    # PREDISPLAY: header is shown whenever scratch is active OR async is
-    # running. Layout depends on whether an instruction has been submitted.
+    # PREDISPLAY: header is shown whenever scratch is active. Layout
+    # depends on whether an instruction has been submitted.
     local instr="$_zsh_ai_scratch_instruction"
 
-    if (( _zsh_ai_scratch_active )) || (( async )); then
+    if (( _zsh_ai_scratch_active )); then
         # Header label depends on mode: ask | modify | question
         local header_label
         case "$_zsh_ai_scratch_mode" in
@@ -123,17 +145,10 @@ _zsh_ai_scratch_build_display() {
         fi
     fi
 
-    # POSTDISPLAY: depends on state. Spinner case preserves what
-    # async_on_tick already set; otherwise we build from segments.
+    # POSTDISPLAY: built from state segments. ask/modify/question all
+    # block while the viewer holds the terminal, so we never render
+    # the scratchpad during a bridge call — no spinner branch.
     local buf_len=$#BUFFER
-
-    if (( async )); then
-        # Spinner owns POSTDISPLAY. We just need to dim it.
-        _build_post_owned=0
-        local plen=$#POSTDISPLAY
-        (( plen > 0 )) && _build_rh+=("$buf_len $((buf_len + plen)) $DIM $MEMO")
-        return 0
-    fi
 
     # Transient status message (e.g. "[no candidates · ^G: retry · esc: cancel]")
     # — overrides the normal POSTDISPLAY content for the current state.
@@ -167,34 +182,6 @@ _zsh_ai_scratch_build_display() {
             ;;
         select)
             _build_post+=$'\n'   # leading separator
-
-            # Show captured thinking above the candidate list when
-            # show_thinking=yes. The on_response callback slurped the
-            # bridge's thinking-output file into _scratch_thinking_content.
-            # Display as plain text with 💭 line prefix, dim styling via
-            # region_highlight. Tail-N truncation (thinking_max_lines,
-            # default 20) keeps the display readable when the model is
-            # verbose.
-            if _zsh_ai_cfg_bool ':zsh-ai:scratch' show_thinking yes; then
-                local think_src="$_zsh_ai_scratch_thinking_content"
-                if [[ -n "$think_src" ]]; then
-                    local max_lines
-                    max_lines="$(_zsh_ai_cfg ':zsh-ai:scratch' thinking_max_lines 20)"
-                    (( max_lines <= 0 )) && max_lines=20
-                    local -a tlines=("${(@f)think_src}")
-                    (( ${#tlines} > max_lines )) && tlines=("${(@)tlines[-max_lines,-1]}")
-                    local think_line
-                    for think_line in "${tlines[@]}"; do
-                        [[ -z "$think_line" ]] && continue
-                        local tl_start=${#_build_post}
-                        _build_post+="     💭 ${think_line}"
-                        _build_rh+=("$((buf_len + tl_start)) $((buf_len + ${#_build_post})) $DIM $MEMO")
-                        _build_post+=$'\n'
-                    done
-                    _build_post+=$'\n'
-                fi
-            fi
-
             local i cand
             for (( i = 1; i <= ${#_zsh_ai_scratch_candidates}; i++ )); do
                 cand="${_zsh_ai_scratch_candidates[$i]}"
@@ -219,7 +206,9 @@ _zsh_ai_scratch_build_display() {
 
             _build_post+=$'\n'   # blank separator before legend
             local leg_start=${#_build_post}
-            _build_post+="       [↑/↓: select · enter: accept · ^G: regen · ^X^X: edit · esc: cancel]"
+            local view_hint=""
+            [[ -n "$_zsh_ai_scratch_thinking_log" ]] && view_hint=" · ^Xv: thinking"
+            _build_post+="       [↑/↓: select · enter: accept · ^G: regen · ^X^X: edit${view_hint} · esc: cancel]"
             _build_rh+=("$((buf_len + leg_start)) $((buf_len + ${#_build_post})) $DIM $MEMO")
             ;;
     esac
@@ -243,17 +232,12 @@ _zsh_ai_scratch_apply_display() {
 # active: just clean any stale memo entries from region_highlight (in case
 # a previous render left some).
 _zsh_ai_scratch_zle_pre_redraw() {
-    if (( _zsh_ai_scratch_active )) || _zsh_ai_async_running 2>/dev/null; then
-        # Defensive: keep BUFFER empty in states where the user shouldn't
-        # be typing into it — select mode (navigating candidates) and
-        # async-running (call in flight). Stray chars from the user
-        # bouncing on keys get swept on each render.
-        if [[ -n "$BUFFER" ]]; then
-            if [[ "$_zsh_ai_scratch_state" == "select" ]] || \
-               _zsh_ai_async_running 2>/dev/null; then
-                BUFFER=""
-                CURSOR=0
-            fi
+    if (( _zsh_ai_scratch_active )); then
+        # Defensive: keep BUFFER empty in select state (navigating
+        # candidates) so stray keystrokes don't enter the buffer.
+        if [[ -n "$BUFFER" && "$_zsh_ai_scratch_state" == "select" ]]; then
+            BUFFER=""
+            CURSOR=0
         fi
 
         local _build_pre _build_post
@@ -284,12 +268,7 @@ _zsh_ai_scratch_build_prompts() {
     case "$mode" in
         modify)
             sys="$(_zsh_ai_cfg ':zsh-ai:scratch' modify_system_prompt '')"
-            [[ -z "$sys" ]] && sys="You are a zsh command-line assistant. The user has typed a shell command and wants it rewritten according to an instruction. Output ONLY shell commands.
-Rules:
-- Output up to ${n_candidates} rewrites of the original command, best first.
-- One command per line. No numbering, bullets, commentary, markdown, or fences.
-- Preserve the user's intent; only change what the instruction asks for.
-- No leading/trailing whitespace. No blank lines."
+            [[ -z "$sys" ]] && sys="${(e)_ZSH_AI_DEFAULT_MODIFY_SYSTEM}"
             user_msg="Original command:
 ${target}
 
@@ -298,29 +277,64 @@ ${instruction}"
             ;;
         question)
             sys="$(_zsh_ai_cfg ':zsh-ai:scratch' question_system_prompt '')"
-            [[ -z "$sys" ]] && sys="You are a helpful shell / general-purpose assistant. Answer the user's question. Be concise. Use markdown code fences for any commands. Avoid pre-amble."
+            [[ -z "$sys" ]] && sys="$_ZSH_AI_DEFAULT_QUESTION_SYSTEM"
             user_msg="$instruction"
             ;;
         *)
             sys="$(_zsh_ai_cfg ':zsh-ai:scratch' system_prompt '')"
-            [[ -z "$sys" ]] && sys="You are a zsh command-line assistant. The user describes a task; output ONLY shell commands that accomplish it.
-Rules:
-- Output up to ${n_candidates} candidate commands, most likely / best first.
-- One command per line. No numbering, no bullets, no commentary, no markdown, no code fences.
-- If a command needs multiple steps, fit it on one line with ; or && chains.
-- No leading/trailing whitespace. No blank lines between candidates."
+            [[ -z "$sys" ]] && sys="${(e)_ZSH_AI_DEFAULT_ASK_SYSTEM}"
             user_msg="$instruction"
             ;;
     esac
 }
 
+# Compute the viewer's CLI args from zstyle config. Writes into the
+# array named in $1. Picks up:
+#   :zsh-ai:scratch viewer_inline  (yes|no, default yes)
+#   :zsh-ai:scratch viewer_height  ("N%" or N rows, default "50%")
+_zsh_ai_scratch_viewer_args() {
+    local out_var="$1"
+    local -a args
+    local inline="$(_zsh_ai_cfg ':zsh-ai:scratch' viewer_inline yes)"
+    case "${inline:l}" in
+        yes|true|1|on)
+            args+=(--inline)
+            local height="$(_zsh_ai_cfg ':zsh-ai:scratch' viewer_height '50%')"
+            if [[ "$height" == *% ]]; then
+                local pct="${height%\%}"
+                args+=(--height $(( LINES * pct / 100 )))
+            else
+                args+=(--height "$height")
+            fi
+            ;;
+    esac
+    set -A "$out_var" "${args[@]}"
+}
+
+# Run the bridge synchronously while a viewer streams its thinking
+# output live. The widget blocks until the viewer dismisses (bridge
+# closed the thinking fifo), then continues with the captured content.
+#
+# Architecture (per the design discussion — option E adapted to sync):
+#
+#   bridge_fifo  : bridge writes thinking here
+#   viewer_fifo  : viewer reads thinking here
+#   thinking_log : tee'd copy of thinking for relaunch (^Xv)
+#   content_log  : bridge writes answer/candidates here
+#   drainer      : `tee thinking_log < bridge_fifo > viewer_fifo`
+#                  bridges the two fifos and persists the log; exits
+#                  cleanly when bridge closes bridge_fifo, which EOFs
+#                  viewer_fifo, which lets the viewer auto-exit.
 _zsh_ai_scratch_kick_off() {
+    # NO_MONITOR / NO_NOTIFY: we background the bridge + drainer with
+    # `&` (so we can wait on their PIDs); without these we'd get
+    # "[1] done bridge..." job notifications mid-flight.
+    setopt LOCAL_OPTIONS NO_MONITOR NO_NOTIFY
     local instruction="$1"
     local _zsh_ai_ctx=':zsh-ai:scratch'
     local model="$(_zsh_ai_cfg ':zsh-ai:scratch' model '')"
     if [[ -z "$model" ]]; then
-        POSTDISPLAY=$'\n\n       [no model configured · esc to cancel]'
-        zle -R
+        zle -M "zsh-ai: configure model with  zstyle ':zsh-ai:scratch' model <name>"
         return 1
     fi
 
@@ -330,103 +344,210 @@ _zsh_ai_scratch_kick_off() {
     local sys user_msg
     _zsh_ai_scratch_build_prompts \
         "$_zsh_ai_scratch_mode" "$instruction" "$_zsh_ai_scratch_target"
-    local system="$sys"
 
-    # Per-mode `enable_thinking_<mode>` override — picked up by _zsh_ai_chat
-    # via dynamic scoping. Falls back to plain `enable_thinking` if unset.
+    # Per-mode `enable_thinking_<mode>` override resolved via dynamic-
+    # scoped vars (lib/config.zsh:_zsh_ai_resolve_thinking).
     local _zsh_ai_thinking_key="enable_thinking_${_zsh_ai_scratch_mode}"
-    # Alt-T forced override takes precedence (one-shot). Resolve uses
-    # _zsh_ai_thinking_forced first if non-empty; we consume + clear here.
     local _zsh_ai_thinking_forced="$_zsh_ai_scratch_thinking_override"
     _zsh_ai_scratch_thinking_override=""
+    local thinking_flag="$(_zsh_ai_resolve_thinking)"
 
-    # Thinking pipe (fifo). Bridge writes reasoning chunks into it; we
-    # open RW from this shell so the writer never blocks for a reader,
-    # and register a zle -F watcher on the read fd so updates are
-    # push-based — bytes arriving on the pipe wake ZLE, which appends
-    # to _scratch_thinking_content and refreshes POSTDISPLAY. No 100 ms
-    # polling, no re-read-the-whole-file cost.
-    #
-    # Only allocated when show_thinking=yes; otherwise the bridge is
-    # told --thinking none and reasoning is dropped at the source.
-    local think_fifo=""
-    local -i think_fd=0
-    if _zsh_ai_cfg_bool ':zsh-ai:scratch' show_thinking yes; then
-        think_fifo=$(mktemp -u -t zsh-ai-think.XXXXXX)
-        if mkfifo "$think_fifo" 2>/dev/null; then
-            # `<>` RW open: the read side is up before the bridge opens
-            # the write side, so the bridge's open() returns immediately.
-            exec {think_fd}<> "$think_fifo"
-        else
-            think_fifo=""
-        fi
+    local show_thinking=0
+    _zsh_ai_cfg_bool ':zsh-ai:scratch' show_thinking yes && show_thinking=1
+
+    local content_log
+    content_log=$(mktemp -t zsh-ai-content.XXXXXX) || return 1
+
+    # Tee architecture: live viewer + persistent log for relaunch.
+    local bridge_fifo="" viewer_fifo="" thinking_log=""
+    local drainer_pid=0
+    if (( show_thinking )); then
+        bridge_fifo=$(mktemp -u -t zsh-ai-bf.XXXXXX) || {
+            zle -M "zsh-ai: mktemp bridge fifo failed"; return 1; }
+        mkfifo "$bridge_fifo" || {
+            zle -M "zsh-ai: mkfifo bridge_fifo failed"; return 1; }
+        viewer_fifo=$(mktemp -u -t zsh-ai-vf.XXXXXX) || {
+            zle -M "zsh-ai: mktemp viewer fifo failed"
+            rm -f "$bridge_fifo"; return 1; }
+        mkfifo "$viewer_fifo" || {
+            zle -M "zsh-ai: mkfifo viewer_fifo failed"
+            rm -f "$bridge_fifo"; return 1; }
+        thinking_log=$(mktemp -t zsh-ai-thlog.XXXXXX) || {
+            zle -M "zsh-ai: mktemp thinking_log failed"
+            rm -f "$bridge_fifo" "$viewer_fifo"; return 1; }
+        # `&` (NOT `&!`) so we can wait on the PID — `&!` disowns the
+        # job and `wait` reports "pid is not a child of this shell".
+        ( tee "$thinking_log" < "$bridge_fifo" > "$viewer_fifo" ) &
+        drainer_pid=$!
     fi
-    _zsh_ai_scratch_thinking_fifo="$think_fifo"
-    _zsh_ai_scratch_thinking_fd=$think_fd
-    _zsh_ai_scratch_thinking_content=""
 
-    # Dynamic-scoped hand-off to async.zsh: register the watcher fd +
-    # handler when we have one.
-    local -i _zsh_ai_async_extra_fd_request=$think_fd
-    local _zsh_ai_async_extra_handler_request=""
-    (( think_fd > 0 )) && _zsh_ai_async_extra_handler_request=_zsh_ai_scratch_thinking_on_read
+    # Status fifo: bridge emits "streaming\n" on first chunk, then
+    # "complete\n"/"error\n"/"interrupted\n" on exit. We open RDWR so
+    # the bridge's append-open doesn't block waiting for a reader.
+    local status_fifo
+    status_fifo=$(mktemp -u -t zsh-ai-sf.XXXXXX) || {
+        zle -M "zsh-ai: mktemp status fifo failed"
+        [[ -n "$bridge_fifo" ]] && rm -f "$bridge_fifo" "$viewer_fifo"
+        return 1; }
+    mkfifo "$status_fifo" || {
+        zle -M "zsh-ai: mkfifo status_fifo failed"
+        [[ -n "$bridge_fifo" ]] && rm -f "$bridge_fifo" "$viewer_fifo"
+        return 1; }
+    local sfd
+    exec {sfd}<>"$status_fifo" || {
+        zle -M "zsh-ai: fd alloc for status fifo failed"
+        rm -f "$status_fifo"
+        [[ -n "$bridge_fifo" ]] && rm -f "$bridge_fifo" "$viewer_fifo"
+        return 1; }
 
-    _zsh_ai_async_run "thinking" _zsh_ai_scratch_on_response \
-        _zsh_ai_chat_split "$model" "$system" "$user_msg" "$max_tokens" "$temp" "$think_fifo"
-    return 0
-}
+    # Bridge in background; writes content to log, thinking to bridge_fifo.
+    # CRITICAL: stderr captured to a file, NOT terminal — otherwise bridge
+    # error messages (connection failures, etc.) interleave with the viewer's
+    # ANSI render and produce visible-garbage display corruption.
+    local bridge_err
+    bridge_err=$(mktemp -t zsh-ai-bridge-err.XXXXXX)
+    # Bridge / viewer binaries are overridable via env vars so tests
+    # can substitute mocks without touching the bin/ symlinks.
+    local bridge="${ZSH_AI_BRIDGE_BIN:-$_ZSH_AI_DIR/bin/zsh-ai-llm}"
+    local viewer="${ZSH_AI_VIEWER_BIN:-$_ZSH_AI_DIR/bin/zsh-ai-view}"
+    # Endpoint / auth: must use the canonical helper or the bridge
+    # defaults to ollama's port 11434, which is the wrong server for
+    # most setups → bridge fires 'error' before any chunk arrives.
+    local -a common_args
+    _zsh_ai_llm_common_args common_args
+    local -a bridge_args=(
+        chat
+        --model "$model"
+        --user "$user_msg"
+        --max-tokens "$max_tokens"
+        --temperature "$temp"
+        --content "$content_log"
+        --status-file "$status_fifo"
+        "${common_args[@]}"
+    )
+    [[ -n "$sys" ]] && bridge_args+=(--system "$sys")
+    if (( show_thinking )); then
+        bridge_args+=(--thinking "$bridge_fifo")
+    else
+        bridge_args+=(--thinking none)
+    fi
+    ( "$bridge" "${bridge_args[@]}" 2>"$bridge_err" ) &
+    local bridge_pid=$!
 
-# zle -F handler: fires whenever bytes are readable on the thinking
-# fifo. Non-blocking sysread, append to buffer, refresh POSTDISPLAY.
-# Must return 0 — non-zero unregisters.
-_zsh_ai_scratch_thinking_on_read() {
-    local fd="$1"
-    local chunk=""
-    # sysread loops until EAGAIN/empty. Larger buffer = fewer syscalls
-    # for a fast streamer; small enough to not block on tiny chunks.
-    while sysread -t 0 -c 4096 -i $fd chunk 2>/dev/null; do
-        [[ -z "$chunk" ]] && break
-        _zsh_ai_scratch_thinking_content+="$chunk"
-    done
-    # Tail-N truncate for display; the full buffer is preserved for the
-    # select-state render later.
-    local n="$(_zsh_ai_cfg ':zsh-ai:scratch' thinking_max_lines 20)"
-    (( n <= 0 )) && n=20
-    local -a lines=("${(@f)_zsh_ai_scratch_thinking_content}")
-    (( ${#lines} > n )) && lines=("${(@)lines[-n,-1]}")
-    local out=""
-    local l
-    for l in "${lines[@]}"; do
-        out+="     💭 ${l}"$'\n'
-    done
-
-    local frame="${_zsh_ai_async_frames[$_zsh_ai_async_frame]}"
-    (( _zsh_ai_async_frame = _zsh_ai_async_frame % ${#_zsh_ai_async_frames[@]} + 1 ))
-    POSTDISPLAY=$'\n\n'"${out}  ${frame} streaming…"
+    # Spinner + wait loop: animate while bridge runs, until 'streaming'
+    # (first chunk received → launch viewer) OR terminal event (skip
+    # viewer; bridge already done). Spinner frames advance on each
+    # read-timeout iteration.
+    local -a spin_frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+    local spin_i=0 line="" got_streaming=0
+    local spin_msg="${_zsh_ai_scratch_mode}: thinking"
+    zle -M "${spin_frames[1]} $spin_msg…"
     zle -R 2>/dev/null
-    return 0
-}
-
-# Resolve the markdown-to-ANSI renderer command. Used by question mode
-# (chat → renderer → terminal). Whether the renderer is streaming-aware
-# (mdansi) or batches at EOF (glow, mdcat) only changes UX, not the
-# pipeline shape.
-#
-# Auto-detection order: mdansi → glow → none. Override:
-#   zstyle ':zsh-ai:scratch' formatter 'mdansi --stream'
-#   zstyle ':zsh-ai:scratch' formatter 'glow -'
-#   zstyle ':zsh-ai:scratch' formatter 'mdcat'
-#   zstyle ':zsh-ai:scratch' formatter 'none'    # raw passthrough
-_zsh_ai_scratch_resolve_renderer() {
-    local r="$(_zsh_ai_cfg ':zsh-ai:scratch' formatter '')"
-    if [[ -z "$r" ]]; then
-        if (( $+commands[mdansi] )); then
-            r='mdansi --stream'
-        elif (( $+commands[glow] )); then
-            r='glow -'
+    while :; do
+        # 100ms timeout → spinner tick rate. read returns 0 on line,
+        # non-zero on timeout / EOF.
+        if IFS= read -t 0.1 -u $sfd line 2>/dev/null; then
+            case "$line" in
+                streaming)  got_streaming=1; break ;;
+                complete|error|interrupted) break ;;
+                # ignore other event lines (none today, but be liberal)
+                *) ;;
+            esac
         fi
+        # Bridge died before any event → skip viewer.
+        if ! kill -0 $bridge_pid 2>/dev/null; then
+            break
+        fi
+        spin_i=$(( (spin_i + 1) % 10 ))
+        zle -M "${spin_frames[spin_i + 1]} $spin_msg…"
+        zle -R 2>/dev/null
+    done
+    zle -M ""
+    zle -R 2>/dev/null
+
+    # Viewer in foreground — ONLY if bridge actually started streaming.
+    # If it errored / completed instantly with no thinking, skip the
+    # viewer and kill the drainer (otherwise it sits forever blocked on
+    # opening viewer_fifo for write).
+    if (( show_thinking && got_streaming )); then
+        zle -I
+        local -a viewer_args
+        _zsh_ai_scratch_viewer_args viewer_args
+        # Explicit /dev/tty redirects: ZLE's stdin/stdout may be in a
+        # state textual can't probe correctly. Forcing the tty
+        # ensures textual sees a real terminal and can take over
+        # input/output cleanly.
+        "$viewer" "$viewer_fifo" \
+            "${viewer_args[@]}" \
+            --title "thinking" --subtitle "$_zsh_ai_scratch_mode" \
+            </dev/tty >/dev/tty
+    elif (( drainer_pid > 0 )); then
+        # No viewer launching → drainer is stuck on viewer_fifo write
+        # open. Kill it so `wait` below doesn't hang the widget.
+        kill $drainer_pid 2>/dev/null
     fi
-    print -r -- "$r"
+
+    # If the user dismissed the viewer (q/Esc) before bridge was done,
+    # abort the bridge — otherwise `wait` blocks until the model finishes,
+    # leaving ZLE frozen with nothing on screen. Bridge gets SIGTERM;
+    # bridge_err may end up empty (we treat that as "aborted by user").
+    local user_aborted=0
+    if kill -0 $bridge_pid 2>/dev/null; then
+        user_aborted=1
+        kill $bridge_pid 2>/dev/null
+    fi
+    wait $bridge_pid
+    local bridge_rc=$?
+    (( drainer_pid > 0 )) && wait $drainer_pid
+
+    # Cleanup transient fifos; keep the thinking log for relaunch.
+    exec {sfd}<&-
+    rm -f "$bridge_fifo" "$viewer_fifo" "$status_fifo"
+    _zsh_ai_scratch_thinking_log="$thinking_log"
+
+    # Re-enable ZLE redraw: viewer (if launched) put the terminal in
+    # alt-screen and restored on exit, but ZLE doesn't know that —
+    # force a clean prompt redraw.
+    zle reset-prompt 2>/dev/null
+
+    # Surface bridge errors AFTER the viewer is gone so the message is
+    # actually readable. User-abort (q/Esc dismiss) suppresses the error
+    # since we caused the bridge exit ourselves.
+    if (( ! user_aborted )) && (( bridge_rc != 0 )) && [[ -s "$bridge_err" ]]; then
+        local err_summary="$(head -1 "$bridge_err")"
+        zle -M "zsh-ai: bridge failed: $err_summary"
+        print -ru2 -- "zsh-ai: bridge failed (exit $bridge_rc):"
+        cat "$bridge_err" >&2
+    fi
+    rm -f "$bridge_err"
+
+    # User-abort path: jump straight to cancel — no candidates to parse.
+    if (( user_aborted )); then
+        rm -f "$content_log"
+        _zsh_ai_scratch_cancel
+        return 0
+    fi
+
+    # Process the captured content into candidates.
+    local content=""
+    [[ -f "$content_log" ]] && content="$(<$content_log)"
+    rm -f "$content_log"
+
+    if ! _zsh_ai_scratch_parse_candidates "$content"; then
+        _zsh_ai_scratch_message="[no candidates · ^G: retry · esc: cancel]"
+        zle reset-prompt
+        return 0
+    fi
+    _zsh_ai_scratch_message=""
+    _zsh_ai_scratch_candidates=( "${reply[@]}" )
+    _zsh_ai_scratch_index=1
+    _zsh_ai_scratch_state="select"
+
+    BUFFER=""
+    CURSOR=0
+    _zsh_ai_scratch_pre_redraw_attach
+    _zsh_ai_scratch_render_now
+    return 0
 }
 
 # Parse REPLY (raw response from LLM) into the candidate list.
@@ -458,41 +579,10 @@ _zsh_ai_scratch_parse_candidates() {
 # all along via the zle -F watcher; one last sysread drains any final
 # bytes the bridge wrote between the last wake and the bridge exiting.
 # The async layer has already closed the watcher fd and unregistered;
-# we just unlink the fifo path. Question mode does not go through async
-# — it streams synchronously from the widget.
-_zsh_ai_scratch_on_response() {
-    if [[ -n "$_zsh_ai_scratch_thinking_fifo" ]]; then
-        rm -f "$_zsh_ai_scratch_thinking_fifo" 2>/dev/null
-        _zsh_ai_scratch_thinking_fifo=""
-    fi
-    _zsh_ai_scratch_thinking_fd=0
-
-    if ! _zsh_ai_scratch_parse_candidates "$REPLY"; then
-        _zsh_ai_scratch_message="[no candidates · ^G: retry · esc: cancel]"
-        zle reset-prompt 2>/dev/null
-        return 0
-    fi
-    _zsh_ai_scratch_message=""
-
-    _zsh_ai_scratch_candidates=( "${reply[@]}" )
-    _zsh_ai_scratch_index=1
-    _zsh_ai_scratch_state="select"
-
-    BUFFER=""
-    CURSOR=0
-
-    # Re-bump to END of chain in case anyone (autosuggest) re-installed
-    # themselves between open and now.
-    _zsh_ai_scratch_pre_redraw_attach
-
-    # No keymap switch — we use a single `zsh-ai-scratch` keymap with
-    # state-aware widgets. The widget bound to each key checks
-    # `_zsh_ai_scratch_state` / `_zsh_ai_async_running` to decide what
-    # to do. This sidesteps the "zle -K from zle -F context doesn't take
-    # effect until next keypress" issue entirely.
-    _zsh_ai_scratch_render_now
-    return 0
-}
+# Candidate parsing is now inlined into _zsh_ai_scratch_kick_off (sync
+# flow). The async layer's on_response callback is no longer used by
+# ask/modify — kick_off blocks while the viewer holds the terminal and
+# wraps up directly.
 
 # ── zsh-autosuggestions coordination ────────────────────────────────────────
 # Both plugins want POSTDISPLAY. We disable autosuggestions for the
@@ -517,41 +607,33 @@ _zsh_ai_scratch_autosuggest_disable() {
     # User had it disabled already → leave it alone.
     [[ -n "${_ZSH_AUTOSUGGEST_DISABLED:-}" ]] && return 0
 
-    _zsh_autosuggest_disable 2>/dev/null
+    _zsh_autosuggest_disable
     _zsh_ai_scratch_autosuggest_was="we_disabled"
-    (( $+functions[_zsh_autosuggest_clear] )) && _zsh_autosuggest_clear 2>/dev/null
+    (( $+functions[_zsh_autosuggest_clear] )) && _zsh_autosuggest_clear
 }
 
 _zsh_ai_scratch_autosuggest_enable() {
     # Only restore if we were the ones who flipped it off.
     if [[ "$_zsh_ai_scratch_autosuggest_was" == "we_disabled" ]] && \
        (( $+functions[_zsh_autosuggest_enable] )); then
-        _zsh_autosuggest_enable 2>/dev/null
+        _zsh_autosuggest_enable
     fi
     _zsh_ai_scratch_autosuggest_was=""
 }
 
-# Choose the bridge's `--thinking` arg based on `show_thinking` config.
-# yes → inline (reasoning merged into the content stream with a blank-
-# line separator — no tags or prefixes; renderer treats it as prose).
-# no  → none (reasoning dropped at the bridge).
-_zsh_ai_scratch_thinking_arg() {
-    _zsh_ai_cfg_bool ':zsh-ai:scratch' show_thinking yes \
-        && print -r -- "inline" \
-        || print -r -- "none"
-}
-
-# Question mode: streams synchronously from the widget. Bridge handles
-# the thinking split natively (--thinking inline embeds <think>…</think>
-# in the stdout stream when show_thinking=yes, drops it when no). The
-# stream pipes through the configured renderer straight to the terminal,
-# then accept-line back to a fresh prompt with the pre-^Xq buffer restored.
+# Question mode: live viewer for thinking, then either render-to-stdout
+# or a second viewer for the answer (controlled by
+# `:zsh-ai:scratch question_output` = render | view, default render).
+# Same tee architecture as kick_off — thinking is tee'd to a log file
+# we keep around for the relaunch widget.
 _zsh_ai_scratch_question_stream() {
+    # See kick_off for why NO_MONITOR / NO_NOTIFY + & (not &!).
+    setopt LOCAL_OPTIONS NO_MONITOR NO_NOTIFY
     local instr="$_zsh_ai_scratch_instruction"
     local saved_buf="$_zsh_ai_scratch_saved_buffer"
 
-    # Tear down scratchpad state BEFORE we exit ZLE — the line-init for the
-    # next prompt won't see our active=1 and won't re-trigger cleanup.
+    # Tear down scratchpad state BEFORE we exit ZLE — the line-init for
+    # the next prompt won't see our active=1 and won't re-trigger cleanup.
     BUFFER=""
     CURSOR=0
     PREDISPLAY=""
@@ -570,26 +652,141 @@ _zsh_ai_scratch_question_stream() {
     local max_tokens="$(_zsh_ai_cfg ':zsh-ai:scratch' max_tokens 1024)"
     local temp="$(_zsh_ai_cfg ':zsh-ai:scratch' temperature 0.2)"
     local sys="$(_zsh_ai_cfg ':zsh-ai:scratch' question_system_prompt '')"
-    [[ -z "$sys" ]] && sys="You are a helpful shell / general-purpose assistant. Answer the user's question. Be concise. Use markdown code fences for any commands. Avoid pre-amble."
+    [[ -z "$sys" ]] && sys="$_ZSH_AI_DEFAULT_QUESTION_SYSTEM"
+    local thinking_flag="$(_zsh_ai_resolve_thinking)"
 
     zle -I
     print ""
     print -P "%F{cyan}?%f %B${instr}%b"
     print ""
 
-    local thinking="$(_zsh_ai_scratch_thinking_arg)"
-    local renderer="$(_zsh_ai_scratch_resolve_renderer)"
-    [[ "$renderer" == "none" ]] && renderer=""
-    if [[ -n "$renderer" ]]; then
-        _zsh_ai_chat "$model" "$sys" "$instr" "$max_tokens" "$temp" \
-            --thinking "$thinking" \
-            | eval "$renderer"
-    else
-        _zsh_ai_chat "$model" "$sys" "$instr" "$max_tokens" "$temp" \
-            --thinking "$thinking"
-    fi
-    print ""
+    local show_thinking=0
+    _zsh_ai_cfg_bool ':zsh-ai:scratch' show_thinking yes && show_thinking=1
 
+    local content_log
+    content_log=$(mktemp -t zsh-ai-content.XXXXXX)
+    local bridge_fifo="" viewer_fifo="" thinking_log=""
+    local drainer_pid=0
+    if (( show_thinking )); then
+        bridge_fifo=$(mktemp -u -t zsh-ai-bf.XXXXXX); mkfifo "$bridge_fifo"
+        viewer_fifo=$(mktemp -u -t zsh-ai-vf.XXXXXX); mkfifo "$viewer_fifo"
+        thinking_log=$(mktemp -t zsh-ai-thlog.XXXXXX)
+        ( tee "$thinking_log" < "$bridge_fifo" > "$viewer_fifo" ) &
+        drainer_pid=$!
+    fi
+
+    local status_fifo
+    status_fifo=$(mktemp -u -t zsh-ai-sf.XXXXXX); mkfifo "$status_fifo"
+    local sfd
+    exec {sfd}<>"$status_fifo"
+
+    # Same bridge-stderr capture trick as kick_off (see comment there).
+    local bridge_err
+    bridge_err=$(mktemp -t zsh-ai-bridge-err.XXXXXX)
+    # Bridge / viewer binaries are overridable via env vars so tests
+    # can substitute mocks without touching the bin/ symlinks.
+    local bridge="${ZSH_AI_BRIDGE_BIN:-$_ZSH_AI_DIR/bin/zsh-ai-llm}"
+    local viewer="${ZSH_AI_VIEWER_BIN:-$_ZSH_AI_DIR/bin/zsh-ai-view}"
+    local -a common_args
+    _zsh_ai_llm_common_args common_args
+    local -a bridge_args=(
+        chat
+        --model "$model"
+        --user "$instr"
+        --max-tokens "$max_tokens"
+        --temperature "$temp"
+        --content "$content_log"
+        --status-file "$status_fifo"
+        "${common_args[@]}"
+    )
+    [[ -n "$sys" ]] && bridge_args+=(--system "$sys")
+    if (( show_thinking )); then
+        bridge_args+=(--thinking "$bridge_fifo")
+    else
+        bridge_args+=(--thinking none)
+    fi
+    ( "$bridge" "${bridge_args[@]}" 2>"$bridge_err" ) &
+    local bridge_pid=$!
+
+    # Spinner (stderr + CR overstrike) until 'streaming' or terminal
+    # event. Out of ZLE here so we can't use zle -M like kick_off does.
+    local -a spin_frames=("⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏")
+    local spin_i=0 line="" got_streaming=0
+    print -nu2 -- "${spin_frames[1]} thinking…"
+    while :; do
+        if IFS= read -t 0.1 -u $sfd line 2>/dev/null; then
+            case "$line" in
+                streaming)  got_streaming=1; break ;;
+                complete|error|interrupted) break ;;
+                *) ;;
+            esac
+        fi
+        if ! kill -0 $bridge_pid 2>/dev/null; then
+            break
+        fi
+        spin_i=$(( (spin_i + 1) % 10 ))
+        # \r + write next frame + clear-to-EOL so a longer previous
+        # frame doesn't leave stale chars behind.
+        print -nu2 -- $'\r'"${spin_frames[spin_i + 1]} thinking…"$'\e[K'
+    done
+    # Clear the spinner line cleanly.
+    print -nu2 -- $'\r\e[K'
+
+    if (( show_thinking && got_streaming )); then
+        local -a viewer_args
+        _zsh_ai_scratch_viewer_args viewer_args
+        "$viewer" "$viewer_fifo" \
+            "${viewer_args[@]}" \
+            --title "thinking" --subtitle "question" \
+            </dev/tty >/dev/tty
+    elif (( drainer_pid > 0 )); then
+        # No viewer → drainer blocked on viewer_fifo write open. Kill
+        # it so `wait` below doesn't hang.
+        kill $drainer_pid 2>/dev/null
+    fi
+
+    # Same user-abort handling as kick_off.
+    local user_aborted=0
+    if kill -0 $bridge_pid 2>/dev/null; then
+        user_aborted=1
+        kill $bridge_pid 2>/dev/null
+    fi
+    wait $bridge_pid
+    local bridge_rc=$?
+    (( drainer_pid > 0 )) && wait $drainer_pid
+    exec {sfd}<&-
+    rm -f "$bridge_fifo" "$viewer_fifo" "$thinking_log" "$status_fifo"
+
+    if (( ! user_aborted )) && (( bridge_rc != 0 )) && [[ -s "$bridge_err" ]]; then
+        print -ru2 -- "zsh-ai: bridge failed (exit $bridge_rc):"
+        cat "$bridge_err" >&2
+    fi
+    rm -f "$bridge_err"
+
+    if (( user_aborted )); then
+        rm -f "$content_log"
+        [[ -n "$saved_buf" ]] && print -z -- "$saved_buf"
+        zle .accept-line
+        return 0
+    fi
+
+    # Answer display: render to terminal (default) or view in modal.
+    local question_output="$(_zsh_ai_cfg ':zsh-ai:scratch' question_output render)"
+    if [[ "${question_output:l}" == view ]]; then
+        local -a viewer_args
+        _zsh_ai_scratch_viewer_args viewer_args
+        "$viewer" "$content_log" \
+            "${viewer_args[@]}" \
+            --title "answer" --no-exit-on-eof \
+            </dev/tty >/dev/tty
+    else
+        # render: pipe through bin/zsh-ai-render with --color always
+        # since stdout is a pipe to less/etc. when the user wraps it.
+        "${ZSH_AI_RENDER_BIN:-$_ZSH_AI_DIR/bin/zsh-ai-render}" --color always < "$content_log"
+    fi
+    rm -f "$content_log"
+
+    print ""
     [[ -n "$saved_buf" ]] && print -z -- "$saved_buf"
     zle .accept-line
     return 0
@@ -606,20 +803,10 @@ _zsh_ai_scratch_reset_state() {
     _zsh_ai_scratch_index=0
     _zsh_ai_scratch_message=""
     _zsh_ai_scratch_thinking_override=""
-    _zsh_ai_scratch_thinking_content=""
-    # Belt-and-braces: if the async layer didn't close the fd (e.g.
-    # cancel path racing with reset), close it here and unlink the
-    # fifo path so we don't leak resources or filesystem entries.
-    if (( _zsh_ai_scratch_thinking_fd > 0 )); then
-        local _fd=$_zsh_ai_scratch_thinking_fd
-        zle -F -w $_fd 2>/dev/null
-        exec {_fd}<&- 2>/dev/null
-        _zsh_ai_scratch_thinking_fd=0
-    fi
-    if [[ -n "$_zsh_ai_scratch_thinking_fifo" ]]; then
-        rm -f "$_zsh_ai_scratch_thinking_fifo" 2>/dev/null
-        _zsh_ai_scratch_thinking_fifo=""
-    fi
+    # Drop the per-session thinking log (kept across kick_off → select
+    # so the relaunch widget can re-view it; cleaned up on accept/cancel).
+    rm -f "$_zsh_ai_scratch_thinking_log"
+    _zsh_ai_scratch_thinking_log=""
 }
 
 # ── Widgets ─────────────────────────────────────────────────────────────────
@@ -649,13 +836,9 @@ _zsh_ai_scratch_question() {
 
 _zsh_ai_scratch_open_impl() {
     local mode="$1"
-    _zsh_ai_log "open: enter mode=$mode KEYMAP=$KEYMAP scratch_active=$_zsh_ai_scratch_active async_pid=$_zsh_ai_async_pid BUFFER=<$BUFFER>"
+    _zsh_ai_log "open: enter mode=$mode KEYMAP=$KEYMAP scratch_active=$_zsh_ai_scratch_active BUFFER=<$BUFFER>"
 
     _zsh_ai_cfg_bool ':zsh-ai:scratch' enabled yes || { _zsh_ai_log "open: disabled, returning"; return 0; }
-    if _zsh_ai_async_running; then
-        _zsh_ai_log "open: async in flight, returning"
-        return 0
-    fi
 
     if (( _zsh_ai_scratch_active )); then
         _zsh_ai_log "open: defensive reset of stale active state"
@@ -687,7 +870,7 @@ _zsh_ai_scratch_open_impl() {
 
     zle -K zsh-ai-scratch
     _zsh_ai_scratch_render_now
-    zle -R 2>/dev/null
+    zle -R
     return 0
 }
 
@@ -699,6 +882,15 @@ _zsh_ai_scratch_submit_instruction() {
 
     BUFFER=""
     CURSOR=0
+
+    # Force-refresh region_highlight + POSTDISPLAY now that BUFFER is
+    # cleared. ZLE's pre-redraw hook doesn't fire reliably between
+    # widget completion and the kick_off spinner, so the *old*
+    # buffer-relative highlight entries from typing (offset by the old
+    # buf_len) would otherwise survive into the spinner phase — making
+    # the legend look half-highlighted as the old offsets land
+    # mid-POSTDISPLAY.
+    _zsh_ai_scratch_render_now
 
     # Question mode takes the synchronous-streaming path (renderer pipe to
     # terminal). Ask/modify go through the async layer.
@@ -733,7 +925,7 @@ _zsh_ai_scratch_thinking_toggle() {
         "false")  _zsh_ai_scratch_thinking_override=""      ;;
     esac
     _zsh_ai_scratch_render_now
-    zle -R 2>/dev/null
+    zle -R
     return 0
 }
 
@@ -751,7 +943,7 @@ _zsh_ai_scratch_down() {
     (( ${#_zsh_ai_scratch_candidates} <= 1 )) && return 0
     _zsh_ai_scratch_index=$(( _zsh_ai_scratch_index % ${#_zsh_ai_scratch_candidates} + 1 ))
     _zsh_ai_scratch_render_now
-    zle -R 2>/dev/null
+    zle -R
     return 0
 }
 
@@ -765,16 +957,13 @@ _zsh_ai_scratch_up() {
         (( _zsh_ai_scratch_index-- ))
     fi
     _zsh_ai_scratch_render_now
-    zle -R 2>/dev/null
+    zle -R
     return 0
 }
 
 # Enter: during async = no-op (don't accept-line). State=instruction =
 # submit. State=select = accept the highlighted candidate.
 _zsh_ai_scratch_enter() {
-    if _zsh_ai_async_running; then
-        return 0
-    fi
     case "$_zsh_ai_scratch_state" in
         instruction) _zsh_ai_scratch_submit_instruction ;;
         select)      _zsh_ai_scratch_accept ;;
@@ -785,10 +974,6 @@ _zsh_ai_scratch_enter() {
 
 # ^G: regen in select state, cancel during async, no-op otherwise.
 _zsh_ai_scratch_g_action() {
-    if _zsh_ai_async_running; then
-        _zsh_ai_scratch_cancel
-        return 0
-    fi
     if [[ "$_zsh_ai_scratch_state" == "select" ]]; then
         [[ -z "$_zsh_ai_scratch_instruction" ]] && return 0
         BUFFER=""
@@ -805,7 +990,27 @@ _zsh_ai_scratch_edit_instruction() {
     _zsh_ai_scratch_instruction=""        # mark as un-submitted so build
                                             # shows single-line header
     _zsh_ai_scratch_render_now
-    zle -R 2>/dev/null
+    zle -R
+    return 0
+}
+
+# ^Xv in select state: re-launch the viewer on the persisted thinking
+# log. Lets the user re-read reasoning while choosing a candidate.
+# No-op if there's no log (e.g. show_thinking was off, or session
+# state was reset).
+_zsh_ai_scratch_relaunch_thinking() {
+    if [[ -z "$_zsh_ai_scratch_thinking_log" || ! -f "$_zsh_ai_scratch_thinking_log" ]]; then
+        zle -M "zsh-ai: no thinking log available"
+        return 0
+    fi
+    zle -I
+    local -a viewer_args
+    _zsh_ai_scratch_viewer_args viewer_args
+    "${ZSH_AI_VIEWER_BIN:-$_ZSH_AI_DIR/bin/zsh-ai-view}" "$_zsh_ai_scratch_thinking_log" \
+        "${viewer_args[@]}" \
+        --title "thinking (recall)" --no-exit-on-eof \
+        </dev/tty >/dev/tty
+    zle reset-prompt
     return 0
 }
 
@@ -851,11 +1056,7 @@ _zsh_ai_scratch_accept() {
 }
 
 _zsh_ai_scratch_cancel() {
-    _zsh_ai_log "cancel: enter; async_pid=$_zsh_ai_async_pid"
-    if _zsh_ai_async_running; then
-        _zsh_ai_async_cancel
-    fi
-
+    _zsh_ai_log "cancel: enter"
     BUFFER="$_zsh_ai_scratch_saved_buffer"
     CURSOR="$_zsh_ai_scratch_saved_cursor"
     PREDISPLAY=""
@@ -897,10 +1098,14 @@ _zsh_ai_scratch_zle_line_init() {
     ask_kb="$(_zsh_ai_cfg ':zsh-ai:scratch' keybind          '^Xa')"
     mod_kb="$(_zsh_ai_cfg ':zsh-ai:scratch' modify_keybind   '^Xm')"
     que_kb="$(_zsh_ai_cfg ':zsh-ai:scratch' question_keybind '^Xq')"
+    # `.safe` is zsh's protected fallback keymap; bindkey refuses to
+    # modify it. Iterating `bindkey -l` lists it; skip it explicitly
+    # rather than suppressing the resulting error.
     for km in $(bindkey -l); do
-        bindkey -M "$km" "$ask_kb" _zsh_ai_scratch_open     2>/dev/null
-        bindkey -M "$km" "$mod_kb" _zsh_ai_scratch_modify   2>/dev/null
-        bindkey -M "$km" "$que_kb" _zsh_ai_scratch_question 2>/dev/null
+        [[ "$km" == .safe ]] && continue
+        bindkey -M "$km" "$ask_kb" _zsh_ai_scratch_open
+        bindkey -M "$km" "$mod_kb" _zsh_ai_scratch_modify
+        bindkey -M "$km" "$que_kb" _zsh_ai_scratch_question
     done
 
     # Stranded-state cleanup: if Ctrl-C or other abnormal exit left scratch
@@ -908,7 +1113,7 @@ _zsh_ai_scratch_zle_line_init() {
     if (( _zsh_ai_scratch_active )); then
         _zsh_ai_log "zle-line-init: stranded scratch state detected; cleaning up"
         _zsh_ai_scratch_reset_state
-        _zsh_ai_async_reset_state 2>/dev/null
+        _zsh_ai_async_reset_state
         _zsh_ai_scratch_pre_redraw_detach
         _zsh_ai_scratch_autosuggest_enable
         PREDISPLAY=""
@@ -922,7 +1127,7 @@ _zsh_ai_scratch_zle_line_init() {
     # cancel widget at a normal prompt.
     if [[ "$KEYMAP" == "zsh-ai-scratch" ]]; then
         _zsh_ai_log "zle-line-init: KEYMAP stranded as scratch — forcing main"
-        zle -K main 2>/dev/null
+        zle -K main
     fi
     return 0
 }
@@ -931,15 +1136,15 @@ _zsh_ai_scratch_zle_line_init() {
 # Conservative: only kills genuinely stranded background processes, doesn't
 # touch ZLE-managed state.
 _zsh_ai_scratch_precmd() {
-    (( _zsh_ai_async_pid > 0 ))      && kill $_zsh_ai_async_pid 2>/dev/null
-    (( _zsh_ai_async_tick_pid > 0 )) && kill $_zsh_ai_async_tick_pid 2>/dev/null
+    (( _zsh_ai_async_pid > 0 ))      && kill $_zsh_ai_async_pid
+    (( _zsh_ai_async_tick_pid > 0 )) && kill $_zsh_ai_async_tick_pid
     # If scratch is somehow active between prompts, clean up. Ctrl-C / SIGINT
     # aborts ZLE without running our widget chain, leaving state stranded.
     if (( _zsh_ai_scratch_active )); then
         _zsh_ai_scratch_pre_redraw_detach
         _zsh_ai_scratch_autosuggest_enable
         _zsh_ai_scratch_reset_state
-        _zsh_ai_async_reset_state 2>/dev/null
+        _zsh_ai_async_reset_state
     fi
 }
 
@@ -947,9 +1152,9 @@ _zsh_ai_scratch_precmd() {
 # if something has stranded the scratchpad state (e.g., after Ctrl-C).
 # Safe to call from anywhere.
 zsh-ai-reset() {
-    (( _zsh_ai_async_pid > 0 ))      && kill $_zsh_ai_async_pid 2>/dev/null
-    (( _zsh_ai_async_tick_pid > 0 )) && kill $_zsh_ai_async_tick_pid 2>/dev/null
-    _zsh_ai_async_reset_state 2>/dev/null
+    (( _zsh_ai_async_pid > 0 ))      && kill $_zsh_ai_async_pid
+    (( _zsh_ai_async_tick_pid > 0 )) && kill $_zsh_ai_async_tick_pid
+    _zsh_ai_async_reset_state
     _zsh_ai_scratch_reset_state
 
     print -- "zsh-ai: state reset"
@@ -998,20 +1203,19 @@ zsh-ai-run() {
     _zsh_ai_scratch_build_prompts "$mode" "$query" "$target"
 
     local _zsh_ai_thinking_key="enable_thinking_${mode}"
-    local thinking="$(_zsh_ai_scratch_thinking_arg)"
+    local thinking_flag
+    _zsh_ai_cfg_bool ':zsh-ai:scratch' show_thinking yes \
+        && thinking_flag="-" \
+        || thinking_flag="none"
 
     if (( render )); then
-        local renderer="$(_zsh_ai_scratch_resolve_renderer)"
-        [[ "$renderer" == "none" ]] && renderer=""
-        if [[ -n "$renderer" ]]; then
-            _zsh_ai_chat "$model" "$sys" "$user_msg" "$max_tokens" "$temp" \
-                --thinking "$thinking" \
-                | eval "$renderer"
-            return $?
-        fi
+        _zsh_ai_chat "$model" "$sys" "$user_msg" "$max_tokens" "$temp" \
+            --thinking "$thinking_flag" \
+            | "${ZSH_AI_RENDER_BIN:-$_ZSH_AI_DIR/bin/zsh-ai-render}" --color always
+    else
+        _zsh_ai_chat "$model" "$sys" "$user_msg" "$max_tokens" "$temp" \
+            --thinking "$thinking_flag"
     fi
-    _zsh_ai_chat "$model" "$sys" "$user_msg" "$max_tokens" "$temp" \
-        --thinking "$thinking"
 }
 
 # ── Registration ────────────────────────────────────────────────────────────
@@ -1031,9 +1235,7 @@ _zsh_ai_scratch_register() {
     zle -N _zsh_ai_scratch_down
     zle -N _zsh_ai_scratch_up
     zle -N _zsh_ai_scratch_thinking_toggle
-    # Push-based thinking-pipe reader. zle -F dispatches to a *widget*,
-    # so this needs the same zle -N treatment as any other handler.
-    zle -N _zsh_ai_scratch_thinking_on_read
+    zle -N _zsh_ai_scratch_relaunch_thinking
     zle -N _zsh_ai_scratch_g_action
     zle -N _zsh_ai_scratch_edit_instruction
     zle -N _zsh_ai_scratch_accept
@@ -1048,6 +1250,7 @@ _zsh_ai_scratch_register() {
     bindkey -M zsh-ai-scratch '^I' _zsh_ai_scratch_down              # Tab = next
     bindkey -M zsh-ai-scratch '^G' _zsh_ai_scratch_g_action
     bindkey -M zsh-ai-scratch '^X^X' _zsh_ai_scratch_edit_instruction
+    bindkey -M zsh-ai-scratch '^Xv'  _zsh_ai_scratch_relaunch_thinking
     # Alt-T cycles the thinking override for the next call. \et is the
     # ESC-prefix encoding of Alt-T that zsh sees on most terminals.
     bindkey -M zsh-ai-scratch $'\et' _zsh_ai_scratch_thinking_toggle
@@ -1062,7 +1265,10 @@ _zsh_ai_scratch_register() {
     # mode (normal vs application keypad), TERM, and which terminal emulator.
     # Use terminfo-derived sequences (canonical for this $TERM) PLUS the
     # common xterm variants as fallbacks.
-    zmodload zsh/terminfo 2>/dev/null
+    # terminfo is optional — we use it to look up canonical arrow-key
+    # escape sequences, but the hardcoded xterm fallbacks below cover
+    # almost every terminal.
+    zmodload zsh/terminfo 2>/dev/null || true
     [[ -n "${terminfo[kcuu1]:-}" ]] && \
         bindkey -M zsh-ai-scratch "${terminfo[kcuu1]}" _zsh_ai_scratch_up
     [[ -n "${terminfo[kcud1]:-}" ]] && \
@@ -1081,10 +1287,12 @@ _zsh_ai_scratch_register() {
     local mod_keybind="$(_zsh_ai_cfg ':zsh-ai:scratch' modify_keybind  '^Xm')"
     local que_keybind="$(_zsh_ai_cfg ':zsh-ai:scratch' question_keybind '^Xq')"
     local km
+    # See _zsh_ai_scratch_zle_line_init for why we skip .safe.
     for km in $(bindkey -l); do
-        bindkey -M "$km" "$ask_keybind" _zsh_ai_scratch_open     2>/dev/null
-        bindkey -M "$km" "$mod_keybind" _zsh_ai_scratch_modify   2>/dev/null
-        bindkey -M "$km" "$que_keybind" _zsh_ai_scratch_question 2>/dev/null
+        [[ "$km" == .safe ]] && continue
+        bindkey -M "$km" "$ask_keybind" _zsh_ai_scratch_open
+        bindkey -M "$km" "$mod_keybind" _zsh_ai_scratch_modify
+        bindkey -M "$km" "$que_keybind" _zsh_ai_scratch_question
     done
 
     # Permanent hooks (need to fire even when scratchpad is closed, for
@@ -1099,13 +1307,16 @@ _zsh_ai_scratch_register() {
     # their own zle-line-pre-redraw wrapper. See _zsh_ai_scratch_pre_redraw_attach.
     zle -N _zsh_ai_scratch_zle_line_init
     zle -N _zsh_ai_scratch_zle_pre_redraw
-    autoload -Uz add-zsh-hook add-zle-hook-widget 2>/dev/null
+    # Required zsh contrib functions. If autoload fails the user has a
+    # genuinely broken zsh — let the error surface so they can fix it
+    # rather than silently degrading the plugin into a half-working state.
+    autoload -Uz add-zsh-hook add-zle-hook-widget
     if (( $+functions[add-zle-hook-widget] )); then
-        add-zle-hook-widget line-init _zsh_ai_scratch_zle_line_init 2>/dev/null
+        add-zle-hook-widget line-init _zsh_ai_scratch_zle_line_init
     else
-        zle -N zle-line-init _zsh_ai_scratch_zle_line_init 2>/dev/null
+        zle -N zle-line-init _zsh_ai_scratch_zle_line_init
     fi
-    add-zsh-hook precmd _zsh_ai_scratch_precmd 2>/dev/null
+    add-zsh-hook precmd _zsh_ai_scratch_precmd
 }
 
 # Attach our pre-redraw hook to the chain (idempotent — won't double-add).
@@ -1113,8 +1324,8 @@ _zsh_ai_scratch_register() {
 # run AFTER any other plugin's pre-redraw, letting our render win on conflict.
 _zsh_ai_scratch_pre_redraw_attach() {
     if (( $+functions[add-zle-hook-widget] )); then
-        add-zle-hook-widget -d line-pre-redraw _zsh_ai_scratch_zle_pre_redraw 2>/dev/null
-        add-zle-hook-widget    line-pre-redraw _zsh_ai_scratch_zle_pre_redraw 2>/dev/null
+        add-zle-hook-widget -d line-pre-redraw _zsh_ai_scratch_zle_pre_redraw
+        add-zle-hook-widget    line-pre-redraw _zsh_ai_scratch_zle_pre_redraw
     fi
 }
 
@@ -1123,7 +1334,7 @@ _zsh_ai_scratch_pre_redraw_attach() {
 # other plugin's render path.
 _zsh_ai_scratch_pre_redraw_detach() {
     if (( $+functions[add-zle-hook-widget] )); then
-        add-zle-hook-widget -d line-pre-redraw _zsh_ai_scratch_zle_pre_redraw 2>/dev/null
+        add-zle-hook-widget -d line-pre-redraw _zsh_ai_scratch_zle_pre_redraw
     fi
 }
 
@@ -1145,7 +1356,10 @@ zsh-ai-scratch-debug() {
     print -- "TERM:             ${TERM}"
     print -- ""
     print -- "terminfo arrow sequences:"
-    zmodload zsh/terminfo 2>/dev/null
+    # terminfo is optional — we use it to look up canonical arrow-key
+    # escape sequences, but the hardcoded xterm fallbacks below cover
+    # almost every terminal.
+    zmodload zsh/terminfo 2>/dev/null || true
     for k in kcuu1 kcud1 kcuf1 kcub1 kcbt; do
         print -- "  $k = $(printf '%q' "${terminfo[$k]:-(none)}")"
     done

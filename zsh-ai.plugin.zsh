@@ -28,16 +28,30 @@ source "$_ZSH_AI_DIR/lib/scratchpad.zsh"
 source "$_ZSH_AI_DIR/lib/fim.zsh"
 
 # ── CLI entrypoint ──────────────────────────────────────────────────────────
-# Minimal one-shot CLI for shell-scripting use. Delegates to the chat
-# function with the global default model. For interactive use, prefer
+# One-shot CLI for shell-scripting and ad-hoc questions. Defaults to
+# rendering the answer as markdown via bin/zsh-ai-render. For raw
+# (unrendered) output, pass --raw. For interactive widgets, use
 # ^Xa / ^Xm / ^Xq from any prompt.
 zsh-ai() {
+    local raw=0 view=0
+    while [[ "$1" == --* ]]; do
+        case "$1" in
+            --raw)  raw=1; shift ;;
+            --view) view=1; shift ;;
+            --)     shift; break ;;
+            *) print -ru2 -- "zsh-ai: unknown option $1"; return 2 ;;
+        esac
+    done
     case "$1" in
         ""|-h|--help|help)
             cat <<'EOF'
 Usage:
-  zsh-ai <question>          ask a one-shot question (prints the answer)
-  zsh-ai -h | help           this message
+  zsh-ai [--raw|--view] <question>
+        ask a one-shot question
+          (default)  pretty-print the answer via bin/zsh-ai-render
+          --raw      stream raw bridge output to stdout (no rendering)
+          --view     open the answer in bin/zsh-ai-view (scrollable modal)
+  zsh-ai -h | help    this message
 
 Interactively in zsh:
   ^Xa   ask for a shell command (multi-line scratchpad, candidate select)
@@ -45,18 +59,32 @@ Interactively in zsh:
   ^Xq   ask any freeform question (answer printed to terminal)
   ^Xi   fill-in-middle completion at the cursor
 EOF
-            ;;
-        *)
-            local model="$(_zsh_ai_cfg ':zsh-ai:scratch' model '')"
-            if [[ -z "$model" ]]; then
-                print -P "%F{red}zsh-ai: no model configured%f" >&2
-                print "  zstyle ':zsh-ai:scratch' model 'your-model'" >&2
-                return 1
-            fi
-            local sys="You are a helpful shell / general-purpose assistant. Be concise. Use markdown code fences for commands."
-            _zsh_ai_chat "$model" "$sys" "$*" 1024 0.2
+            return 0
             ;;
     esac
+
+    local model="$(_zsh_ai_cfg ':zsh-ai:scratch' model '')"
+    if [[ -z "$model" ]]; then
+        print -P "%F{red}zsh-ai: no model configured%f" >&2
+        print "  zstyle ':zsh-ai:scratch' model 'your-model'" >&2
+        return 1
+    fi
+    local sys="$_ZSH_AI_DEFAULT_QUESTION_SYSTEM"
+
+    if (( view )); then
+        # Stream bridge output to a temp file, then open in the viewer.
+        local log
+        log=$(mktemp -t zsh-ai-cli.XXXXXX)
+        _zsh_ai_chat "$model" "$sys" "$*" 1024 0.2 > "$log"
+        "$_ZSH_AI_DIR/bin/zsh-ai-view" "$log" --no-exit-on-eof \
+            --title "answer"
+        rm -f "$log"
+    elif (( raw )); then
+        _zsh_ai_chat "$model" "$sys" "$*" 1024 0.2
+    else
+        _zsh_ai_chat "$model" "$sys" "$*" 1024 0.2 \
+            | "$_ZSH_AI_DIR/bin/zsh-ai-render" --color always
+    fi
 }
 
 # ── Widget registration (interactive shells only) ───────────────────────────

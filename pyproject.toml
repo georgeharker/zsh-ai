@@ -5,6 +5,8 @@ description = "OpenAI-compatible LLM integration for zsh — Python bridge"
 requires-python = ">=3.9"
 dependencies = [
     "openai>=1.0",
+    "rich>=13.0",      # used by zsh-ai-render (one-shot markdown)
+    "textual>=0.50",   # used by zsh-ai-view (scrollable modal)
 ]
 
 # `uv sync` installs this package (editable) into .venv/ along with
@@ -21,3 +23,15 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 module-root = "src"
 module-name = "zsh_ai"
+
+# Dev tools: pylsp + ruff (for editor LSP) and CLI ruff/mypy for scripted
+# validation. We deliberately do NOT use pyright — pylsp is the editor
+# server here and ruff covers lint + format.
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "python-lsp-server>=1.10",
+    "python-lsp-ruff>=2.2",
+    "pylsp-mypy>=0.6",
+]

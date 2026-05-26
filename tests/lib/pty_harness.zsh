@@ -66,29 +66,6 @@ ${TEST_PRE_SOURCE:-}
 
 source "$PTY_PLUGIN_PATH"
 
-# Default mocks. Tests pass the mock response via a FILE path (env var
-# _TEST_AI_RESPONSE_FILE) — not via env content. This avoids zpty's argv
-# re-eval mangling multi-line strings (newlines in env values get parsed
-# as shell commands).
-#
-# _zsh_ai_chat_split is the ask/modify path; \$6 is the thinking-output
-# file (may be empty). If _TEST_AI_THINK_RESPONSE_FILE is set in the
-# spawned env, mirror it into the thinking file so progress-hook /
-# captured-thinking tests have something to read.
-_zsh_ai_chat() {
-    [[ -f "\${_TEST_AI_RESPONSE_FILE:-}" ]] && cat "\$_TEST_AI_RESPONSE_FILE"
-}
-_zsh_ai_chat_split() {
-    local think_file="\$6"
-    if [[ -n "\$think_file" && -f "\${_TEST_AI_THINK_RESPONSE_FILE:-}" ]]; then
-        cat "\$_TEST_AI_THINK_RESPONSE_FILE" >| "\$think_file"
-    fi
-    [[ -f "\${_TEST_AI_RESPONSE_FILE:-}" ]] && cat "\$_TEST_AI_RESPONSE_FILE"
-}
-_zsh_ai_completion() {
-    [[ -f "\${_TEST_AI_RESPONSE_FILE:-}" ]] && cat "\$_TEST_AI_RESPONSE_FILE"
-}
-
 ${TEST_POST_SOURCE:-}
 
 # Inspector widget — prints structured field=value lines to stderr (which
@@ -114,7 +91,7 @@ function _pty_inspect() {
     print -ru2 -- "\${mk}SCRATCH_ACTIVE=\$_zsh_ai_scratch_active"
     print -ru2 -- "\${mk}SCRATCH_STATE=\$_zsh_ai_scratch_state"
     print -ru2 -- "\${mk}SCRATCH_INDEX=\$_zsh_ai_scratch_index"
-    print -ru2 -- "\${mk}ASYNC_RUNNING=\$(_zsh_ai_async_running 2>/dev/null && print 1 || print 0)"
+    print -ru2 -- "\${mk}THINKING_LOG=\$_zsh_ai_scratch_thinking_log"
     local n=\${#region_highlight[@]}
     print -ru2 -- "\${mk}RH_COUNT=\$n"
     local i v
@@ -176,6 +153,10 @@ pty_spawn() {
     _pty_zdotdirs[$name]=$zdotdir
     _pty_make_zshrc "$name" "$zdotdir"
 
+    # Mocks: scratchpad now spawns the bridge + viewer as subprocesses,
+    # not as in-shell functions. Tests pass mocks via ZSH_AI_BRIDGE_BIN
+    # and ZSH_AI_VIEWER_BIN env vars (see scratchpad.zsh). The bridge
+    # mock reads its canned content from ZSH_AI_TEST_CONTENT etc.
     zpty -b $name env -i \
         HOME="$zdotdir" \
         ZDOTDIR="$zdotdir" \
@@ -185,8 +166,15 @@ pty_spawn() {
         USER="${USER:-test}" \
         LC_ALL="${LC_ALL:-en_US.UTF-8}" \
         LANG="${LANG:-en_US.UTF-8}" \
-        _TEST_AI_RESPONSE_FILE="${TEST_AI_RESPONSE_FILE:-}" \
-        _TEST_AI_THINK_RESPONSE_FILE="${TEST_AI_THINK_RESPONSE_FILE:-}" \
+        ZSH_AI_BRIDGE_BIN="${ZSH_AI_BRIDGE_BIN:-}" \
+        ZSH_AI_VIEWER_BIN="${ZSH_AI_VIEWER_BIN:-}" \
+        ZSH_AI_RENDER_BIN="${ZSH_AI_RENDER_BIN:-}" \
+        ZSH_AI_TEST_CONTENT_FILE="${ZSH_AI_TEST_CONTENT_FILE:-}" \
+        ZSH_AI_TEST_THINKING_FILE="${ZSH_AI_TEST_THINKING_FILE:-}" \
+        ZSH_AI_TEST_DELAY="${ZSH_AI_TEST_DELAY:-}" \
+        ZSH_AI_TEST_EXIT="${ZSH_AI_TEST_EXIT:-}" \
+        ZSH_AI_TEST_STDERR="${ZSH_AI_TEST_STDERR:-}" \
+        ZSH_AI_TEST_VIEW_DELAY="${ZSH_AI_TEST_VIEW_DELAY:-}" \
         zsh --no-globalrcs -i
 
     local marker=${_pty_markers[$name]}

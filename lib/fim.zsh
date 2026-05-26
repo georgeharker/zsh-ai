@@ -135,7 +135,7 @@ _zsh_ai_fim_complete() {
         LBUFFER="${_zsh_ai_fim_pending_lbuf}${completion}"
     fi
     _zsh_ai_fim_pending_lbuf=""
-    zle reset-prompt 2>/dev/null
+    zle reset-prompt
     return 0
 }
 

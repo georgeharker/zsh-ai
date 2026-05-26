@@ -1,0 +1,71 @@
+#!/bin/sh
+# Mock bridge for tests. Reads canned content/thinking from files
+# whose paths are in env vars (multi-line env *values* get eval'd by
+# zpty's argv re-quoting; file paths sidestep that).
+#
+#   ZSH_AI_TEST_CONTENT_FILE  — file whose contents are written to --content
+#   ZSH_AI_TEST_THINKING_FILE — file whose contents are written to --thinking
+#   ZSH_AI_TEST_DELAY         — sleep N seconds before exiting (default 0)
+#   ZSH_AI_TEST_EXIT          — exit code (default 0)
+#   ZSH_AI_TEST_STDERR        — line to print to stderr (for error-path tests)
+#
+# All args are parsed but only --content / --thinking values are used.
+
+content=""
+thinking=""
+status_file=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --content)     content="$2";     shift 2 ;;
+        --thinking)    thinking="$2";    shift 2 ;;
+        --status-file) status_file="$2"; shift 2 ;;
+        --)            shift; break ;;
+        *)             shift ;;
+    esac
+done
+
+# Thinking output (fifo or none): background-write so we don't block
+# on the fifo's reader.
+if [ -n "$thinking" ] && [ "$thinking" != "none" ]; then
+    if [ -n "${ZSH_AI_TEST_THINKING_FILE:-}" ] && [ -f "$ZSH_AI_TEST_THINKING_FILE" ]; then
+        cat "$ZSH_AI_TEST_THINKING_FILE" > "$thinking" &
+    else
+        : > "$thinking" &
+    fi
+    think_pid=$!
+fi
+
+if [ -n "$content" ]; then
+    if [ -n "${ZSH_AI_TEST_CONTENT_FILE:-}" ] && [ -f "$ZSH_AI_TEST_CONTENT_FILE" ]; then
+        cat "$ZSH_AI_TEST_CONTENT_FILE" > "$content"
+    else
+        : > "$content"
+    fi
+fi
+
+# Status events: the widget waits on 'streaming' before launching the
+# viewer, then 'complete' on clean exit. Mirror the real bridge's shape
+# so the deferred-launch path works in tests.
+if [ -n "$status_file" ]; then
+    printf 'streaming\n' >> "$status_file"
+fi
+
+if [ -n "${ZSH_AI_TEST_DELAY:-}" ]; then
+    sleep "$ZSH_AI_TEST_DELAY"
+fi
+
+if [ -n "${ZSH_AI_TEST_STDERR:-}" ]; then
+    printf '%s\n' "$ZSH_AI_TEST_STDERR" >&2
+fi
+
+[ -n "${think_pid:-}" ] && wait "$think_pid" 2>/dev/null
+
+rc="${ZSH_AI_TEST_EXIT:-0}"
+if [ -n "$status_file" ]; then
+    if [ "$rc" -eq 0 ]; then
+        printf 'complete\n' >> "$status_file"
+    else
+        printf 'error\n' >> "$status_file"
+    fi
+fi
+exit "$rc"

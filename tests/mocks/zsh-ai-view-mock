@@ -1,0 +1,28 @@
+#!/bin/sh
+# Mock viewer for tests. Reads the input path (positional arg) to EOF
+# and exits, simulating the real viewer's `--exit-on-eof` behaviour
+# without actually opening textual / claiming the terminal.
+#
+# The first positional arg is the input (file or fifo).
+# All other args are ignored.
+#
+# Honours ZSH_AI_TEST_VIEW_DELAY for "user q'd quickly" simulations.
+
+if [ -n "${ZSH_AI_TEST_VIEW_DELAY:-}" ]; then
+    sleep "$ZSH_AI_TEST_VIEW_DELAY"
+fi
+
+# Drain the input (fifo/file) to simulate viewer's EOF-driven exit.
+input=""
+for arg in "$@"; do
+    case "$arg" in
+        --*) ;;
+        *) input="$arg"; break ;;
+    esac
+done
+
+if [ -n "$input" ] && [ -e "$input" ]; then
+    cat "$input" > /dev/null
+fi
+
+exit 0

@@ -59,6 +59,14 @@ def build_parser() -> argparse.ArgumentParser:
              "inline merges reasoning into the content stream, "
              "separated from real content by a blank line",
     )
+    chat.add_argument(
+        "--status-file", default="",
+        help="path (file or fifo) to receive status lines: "
+             "'streaming\\n' on first chunk from the API, "
+             "'complete\\n' on clean exit, 'error\\n' on exception. "
+             "Lets a sidecar viewer update its UI on real bridge events "
+             "rather than guessing from data flow.",
+    )
 
     comp = sub.add_parser("complete", help="text-completions endpoint (FIM)")
     _add_common(comp)

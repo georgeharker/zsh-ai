@@ -1,0 +1,11 @@
+#!/usr/bin/env zsh
+# bin/zsh-ai-render — pipe stdin through the rich markdown renderer.
+#
+# Useful headlessly:
+#   cat sample.md           | ./bin/zsh-ai-render
+#   ./bin/zsh-ai-llm chat … | ./bin/zsh-ai-render --stream
+#   ./bin/zsh-ai-render --pager < sample.md
+#
+# Setup: `uv sync` in the plugin directory.
+
+exec "${0:A:h:h}/.venv/bin/python" -m zsh_ai.render "$@"

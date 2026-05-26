@@ -1,0 +1,165 @@
+#!/usr/bin/env zsh
+# zsh-ai-probe — run the bridge with content/thinking/status flowing
+# through fifos, print each chunk as it arrives with a timestamped
+# label. Useful for diagnosing what the bridge actually emits and when.
+#
+# Source or execute. Reads config from env > :zsh-ai:scratch > :zsh-ai:*
+# > default (same shape as test_real_bridge.zsh).
+#
+#   ZSH_AI_REAL_MODEL    model
+#   ZSH_AI_REAL_ENDPOINT endpoint
+#   ZSH_AI_REAL_API_KEY_ENV / _API_KEY
+#   ZSH_AI_REAL_USER     user prompt    (default: 'find python files')
+#   ZSH_AI_REAL_SYSTEM   system prompt  (default: scratchpad-style)
+#
+# Output:
+#   [content   12.345] <bytes>
+#   [thinking  12.567] <bytes>
+#   [status    13.890] streaming
+#   [status    44.012] complete
+#   [done] rc=0 elapsed=31s thinking=6557B content=134B
+
+emulate -L zsh
+setopt LOCAL_OPTIONS NO_MONITOR NO_NOTIFY
+
+_zap_resolve() {
+    local env_name="$1" key="$2" val=""
+    [[ -n "${(P)env_name}" ]] && { print -r -- "${(P)env_name}"; return; }
+    local ctx
+    for ctx in ':zsh-ai:scratch' ':zsh-ai:*'; do
+        zstyle -s "$ctx" "$key" val
+        [[ -n "$val" ]] && { print -r -- "$val"; return; }
+    done
+}
+
+_zap_main() {
+    local repo_root=${${(%):-%x}:A:h:h}
+    local bridge="${repo_root}/bin/zsh-ai-llm"
+    # Same python-resolution pattern as the bridge launcher: prefer the
+    # project venv, fall back to whatever's on PATH.
+    local pybin="${repo_root}/.venv/bin/python"
+    [[ -x "$pybin" ]] || pybin=$(command -v python3 2>/dev/null || command -v python)
+    if [[ -z "$pybin" || ! -x "$pybin" ]]; then
+        print -ru2 -- "zsh-ai-probe: no python found (tried ${repo_root}/.venv/bin/python, python3, python)"
+        return 2
+    fi
+    export ZSH_AI_PROBE_PYBIN="$pybin"
+
+    local model=$(_zap_resolve ZSH_AI_REAL_MODEL       model)
+    local endpoint=$(_zap_resolve ZSH_AI_REAL_ENDPOINT endpoint)
+    local api_key_env=$(_zap_resolve ZSH_AI_REAL_API_KEY_ENV api_key_env)
+    local api_key=$(_zap_resolve ZSH_AI_REAL_API_KEY   api_key)
+    endpoint="${endpoint:-http://localhost:11434/v1}"
+
+    local user="${ZSH_AI_REAL_USER:-find python files modified this week}"
+    local system="${ZSH_AI_REAL_SYSTEM:-You are a zsh shell assistant. Output exactly 3 candidate shell commands, one per line, no numbering, no markdown.}"
+
+    if [[ -z "$model" ]]; then
+        print -ru2 -- "zsh-ai-probe: no model — set ZSH_AI_REAL_MODEL or zstyle"
+        return 1
+    fi
+
+    # Three fifos so we can see each stream as it arrives.
+    local cf=$(mktemp -u -t zsh-ai-probe-c.XXXXXX)
+    local tf=$(mktemp -u -t zsh-ai-probe-t.XXXXXX)
+    local sf=$(mktemp -u -t zsh-ai-probe-s.XXXXXX)
+    local errf=$(mktemp -t zsh-ai-probe-err.XXXXXX)
+    mkfifo "$cf" "$tf" "$sf"
+
+    # Tally files (each reader writes byte count on EOF).
+    local cf_tally=$(mktemp -t zsh-ai-probe-ctally.XXXXXX)
+    local tf_tally=$(mktemp -t zsh-ai-probe-ttally.XXXXXX)
+
+    # Reader: tail $fifo, emit "[label  t.xxx] <data>" for each read.
+    # We use python -u for unbuffered, timestamped, label-prefixed output.
+    # Why python? zsh `read -k1` makes per-byte timestamps but doesn't
+    # show chunk boundaries; this preserves whatever the bridge actually
+    # sent in a single write.
+    _zap_reader() {
+        local label="$1" path="$2" tally="$3"
+        "$ZSH_AI_PROBE_PYBIN" -u -c '
+import os, sys, time
+label, path, tally = sys.argv[1], sys.argv[2], sys.argv[3]
+t0 = float(os.environ["ZSH_AI_PROBE_T0"])
+total = 0
+fd = os.open(path, os.O_RDONLY)
+try:
+    while True:
+        try:
+            data = os.read(fd, 65536)
+        except OSError:
+            break
+        if not data:
+            break
+        total += len(data)
+        t = time.time() - t0
+        text = data.decode("utf-8", "replace")
+        sys.stdout.write(f"[{label:<9} {t:7.3f}] {text}")
+        if not data.endswith(b"\n"):
+            sys.stdout.write("\n")
+        sys.stdout.flush()
+finally:
+    os.close(fd)
+    with open(tally, "w") as f:
+        f.write(str(total))
+' "$label" "$path" "$tally"
+    }
+
+    export ZSH_AI_PROBE_T0=$EPOCHREALTIME
+    _zap_reader content  "$cf" "$cf_tally" &
+    local cr=$!
+    _zap_reader thinking "$tf" "$tf_tally" &
+    local tr=$!
+    _zap_reader status   "$sf" /dev/null &
+    local sr=$!
+
+    local -a args=(
+        chat
+        --model "$model"
+        --endpoint "$endpoint"
+        --system "$system"
+        --user "$user"
+        --max-tokens 4096
+        --enable-thinking auto
+        --content "$cf"
+        --thinking "$tf"
+        --status-file "$sf"
+    )
+    [[ -n "$api_key_env" ]] && args+=(--api-key-env "$api_key_env")
+    [[ -z "$api_key_env" && -n "$api_key" ]] && args+=(--api-key "$api_key")
+
+    print -ru2 -- "zsh-ai-probe: model=$model endpoint=$endpoint"
+    print -ru2 -- "zsh-ai-probe: prompt=\"$user\""
+    print -ru2 -- ""
+
+    local t0=$EPOCHREALTIME
+    "$bridge" "${args[@]}" 2>"$errf"
+    local rc=$?
+    local t1=$EPOCHREALTIME
+
+    # Wait for readers to drain their fifos.
+    wait $cr $tr $sr 2>/dev/null
+
+    local c_bytes=$(<"$cf_tally")
+    local t_bytes=$(<"$tf_tally")
+    local elapsed=$(printf '%.2f' $(( t1 - t0 )))
+    print -ru2 -- ""
+    print -ru2 -- "[done] rc=$rc elapsed=${elapsed}s thinking=${t_bytes}B content=${c_bytes}B"
+    if [[ -s "$errf" ]]; then
+        print -ru2 -- "[stderr]"
+        cat "$errf" >&2
+    fi
+
+    rm -f "$cf" "$tf" "$sf" "$errf" "$cf_tally" "$tf_tally"
+    return $rc
+}
+
+_zap_main "$@"
+_zap_rc=$?
+unset -f _zap_main _zap_resolve _zap_reader
+unset ZSH_AI_PROBE_T0 ZSH_AI_PROBE_PYBIN
+
+if [[ "$ZSH_EVAL_CONTEXT" == *:file* ]]; then
+    return $_zap_rc
+fi
+exit $_zap_rc
