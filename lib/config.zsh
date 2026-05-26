@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# lib/config.zsh — zstyle-based config readers for zsh-ai.
+# lib/config.zsh — zstyle-based config readers + shared tmpdir for zsh-ai.
 #
 # Namespace layout:
 #   :zsh-ai:*       shared (endpoint, api_key / api_key_env, http_timeout)
@@ -99,3 +99,10 @@ _zsh_ai_resolve_thinking() {
         *)              print -r -- "auto"  ;;
     esac
 }
+
+# ── Tmp dir ─────────────────────────────────────────────────────────────────
+# All runtime tempfiles + fifos go under a single zsh-ai/ subdir of
+# $TMPDIR so they're easy to find, sweep, or watch in one place.
+# Created at plugin-source time; survives until OS reaps $TMPDIR.
+typeset -g _ZSH_AI_TMPDIR="${TMPDIR:-/tmp}/zsh-ai"
+mkdir -p "$_ZSH_AI_TMPDIR"

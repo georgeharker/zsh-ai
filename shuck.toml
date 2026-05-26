@@ -1,0 +1,27 @@
+# shuck linter config for the zsh-ai repo.
+#
+# shuck is a static analyzer for shell; it doesn't follow `source` and
+# can't resolve variables that live in a co-sourced file. That produces
+# a class of unavoidable false positives that we silence repo-wide
+# rather than spamming inline directives.
+#
+# Per-line `# shuck: ignore=...` (same line) and `# shuck: disable=...`
+# (line before) are still used for one-off cases.
+
+[lint]
+# C006 (variable referenced before assignment): we have many cross-file
+#   references via `source` (e.g. tests read _pty_fields set by the
+#   harness, scratchpad reads _zsh_ai_async_* set by lib/async.zsh).
+#   shuck can't see through `source`, so every such ref looks
+#   undefined. Disabling globally; if a real undefined-var bug slips
+#   through it will surface at runtime in a test.
+#
+# C003 (sourced file is not available to this analysis): same root
+#   cause — dynamic paths like `$_ZSH_AI_DIR/lib/...` aren't
+#   resolvable statically.
+ignore = ["C006", "C003"]
+
+# For ZLE display-side-effect globals (PREDISPLAY, POSTDISPLAY, etc.),
+# assignments are the WHOLE POINT — not dead code. We mark those
+# specific lines with `# shuck: ignore=C001` rather than disabling
+# C001 repo-wide (which would mask real dead-local-var bugs).

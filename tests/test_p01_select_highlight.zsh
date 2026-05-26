@@ -1,34 +1,33 @@
 #!/usr/bin/env zsh
 # test_p01_select_highlight — verify region_highlight ranges in select mode.
 # Positions are BUFFER-relative; PRE is not coloured.
+#
+# Drives the real ^Xa flow against the mock bridge + viewer binaries (same
+# shape as p40) so the assertions exercise the actual kick_off →
+# parse_candidates → state=select pipeline.
 
 source "${0:A:h}/lib/pty_harness.zsh"
 
-TEST_AI_RESPONSE_FILE=$(mktemp -t zsh-ai-test-resp.XXXXXX)
-{
-    print -r -- "find . -type f"
-    print -r -- "gdu -d1 ."
-    print -r -- "du -sh"
-} > "$TEST_AI_RESPONSE_FILE"
+repo_root=${0:A:h:h}
+export ZSH_AI_BRIDGE_BIN="${repo_root}/tests/mocks/zsh-ai-llm-mock"
+export ZSH_AI_MDVIEW_BIN="${repo_root}/tests/mocks/zsh-ai-view-mock"
 
-TEST_POST_SOURCE='
-_zsh_ai_async_run() {
-    local label="$1"; shift
-    local callback="$1"; shift
-    REPLY="$("$@" 2>/dev/null)"
-    [[ -n "$callback" ]] && (( $+functions[$callback] )) && "$callback"
-    return 0
-}
-_zsh_ai_async_running() { return 1; }
-'
+content_file=$(mktemp -t zshai-content.XXXXXX)
+cat >"$content_file" <<'EOF'
+find . -type f
+gdu -d1 .
+du -sh
+EOF
+export ZSH_AI_TEST_CONTENT_FILE="$content_file"
 
-trap "rm -f $TEST_AI_RESPONSE_FILE; pty_cleanup_all" EXIT
+trap 'rm -f "$content_file"; pty_cleanup_all' EXIT
 
 pty_spawn shellA || pty_fail "spawn"
 
 pty_press_keys shellA $'\030a'
 pty_press_keys shellA "big files"
 pty_press_keys shellA $'\r'
+sleep 0.8
 
 pty_inspect shellA || pty_fail "inspect"
 
@@ -36,8 +35,8 @@ pty_assert_eq "state"          "select" "${_pty_fields[SCRATCH_STATE]}" || pty_f
 pty_assert_eq "candidates"     "3"      "${_pty_fields[CAND_COUNT]}"    || pty_fail ""
 pty_assert_eq "selected index" "1"      "${_pty_fields[SCRATCH_INDEX]}" || pty_fail ""
 
-local BUF="${_pty_fields[BUFFER]}"
-local POST="${_pty_fields[POSTDISPLAY]}"
+local BUF="${_pty_fields[BUFFER]}"     # shuck: ignore=C001   # used via $#BUF below
+local POST="${_pty_fields[POSTDISPLAY]}"  # shuck: ignore=C001   # used via $#POST below
 local buf_len=$#BUF
 local post_len=$#POST
 local post_off=$buf_len    # BUFFER-relative: POST starts at buf_len

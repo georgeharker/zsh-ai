@@ -7,5 +7,6 @@ emulate -L zsh
 SCRIPT_DIR="${0:A:h}"
 PLUGIN_ROOT="${SCRIPT_DIR:h}"
 
+# shuck: disable=C003   # PLUGIN_ROOT is resolved at runtime; static analysis can't follow
 source "$PLUGIN_ROOT/zsh-ai.plugin.zsh"
 zsh-ai "$@"

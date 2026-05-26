@@ -2,11 +2,11 @@
 # PTY harness for zsh-ai tests.
 #
 # Spawns interactive zsh under zpty with full env isolation, sources the
-# plugin, mocks the bridge wrappers (_zsh_ai_chat, _zsh_ai_chat_split,
-# _zsh_ai_completion) so tests don't need a real LLM endpoint, and
-# provides an inspector widget that reports the current ZLE display
-# state (PREDISPLAY, POSTDISPLAY, BUFFER, KEYMAP, region_highlight) in
-# machine-parseable form.
+# plugin, points ZSH_AI_BRIDGE_BIN / ZSH_AI_MDVIEW_BIN at mock binaries
+# (tests/mocks/) so tests don't need a real LLM endpoint or a real
+# textual viewer, and provides an inspector widget that reports the
+# current ZLE display state (PREDISPLAY, POSTDISPLAY, BUFFER, KEYMAP,
+# region_highlight) in machine-parseable form.
 #
 # Patterned after zsh-contextual-history's PTY harness. Lifecycle:
 #
@@ -155,7 +155,7 @@ pty_spawn() {
 
     # Mocks: scratchpad now spawns the bridge + viewer as subprocesses,
     # not as in-shell functions. Tests pass mocks via ZSH_AI_BRIDGE_BIN
-    # and ZSH_AI_VIEWER_BIN env vars (see scratchpad.zsh). The bridge
+    # and ZSH_AI_MDVIEW_BIN env vars (see scratchpad.zsh). The bridge
     # mock reads its canned content from ZSH_AI_TEST_CONTENT etc.
     zpty -b $name env -i \
         HOME="$zdotdir" \
@@ -167,8 +167,8 @@ pty_spawn() {
         LC_ALL="${LC_ALL:-en_US.UTF-8}" \
         LANG="${LANG:-en_US.UTF-8}" \
         ZSH_AI_BRIDGE_BIN="${ZSH_AI_BRIDGE_BIN:-}" \
-        ZSH_AI_VIEWER_BIN="${ZSH_AI_VIEWER_BIN:-}" \
-        ZSH_AI_RENDER_BIN="${ZSH_AI_RENDER_BIN:-}" \
+        ZSH_AI_MDVIEW_BIN="${ZSH_AI_MDVIEW_BIN:-}" \
+        ZSH_AI_MDRENDER_BIN="${ZSH_AI_MDRENDER_BIN:-}" \
         ZSH_AI_TEST_CONTENT_FILE="${ZSH_AI_TEST_CONTENT_FILE:-}" \
         ZSH_AI_TEST_THINKING_FILE="${ZSH_AI_TEST_THINKING_FILE:-}" \
         ZSH_AI_TEST_DELAY="${ZSH_AI_TEST_DELAY:-}" \
@@ -210,8 +210,10 @@ pty_inspect() {
 
     # Extract the inspect block: everything between the most recent
     # _INSP_${name}_START and the next _INSP_${name}_END.
-    local block="${REPLY##*${mk}START}"
-    block="${block%%${mk}END*}"
+    # `"${mk}"` quoted inside the expansion → match literally, never
+    # treat the marker as a glob pattern.
+    local block="${REPLY##*"${mk}"START}"
+    block="${block%%"${mk}"END*}"
 
     # Parse each line. Format: ${mk}KEY=value (newlines inside value were
     # replaced with __ZSHAI_NL__ by the inspector; restore here).
@@ -222,7 +224,7 @@ pty_inspect() {
         # PTY translates LF→CRLF; strip trailing \r before any pattern matching.
         line="${line%$'\r'}"
         [[ "$line" != ${mk}* ]] && continue
-        line="${line#${mk}}"
+        line="${line#"${mk}"}"
         key="${line%%=*}"
         val="${line#*=}"
         val="${val//${NL_SUB}/${LF}}"
@@ -285,7 +287,7 @@ pty_extract_styled() {
     reply=()
     local remaining="$stream"
     while [[ "$remaining" == *${on_esc}* ]]; do
-        local after="${remaining#*${on_esc}}"
+        local after="${remaining#*"${on_esc}"}"
         # Truncate at next CSI: ESC + [
         local segment="${after%%$'\e['*}"
         reply+=("$segment")

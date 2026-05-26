@@ -43,7 +43,7 @@ class ViewArgs(TypedDict):
     width: int
 
 
-class ViewerApp(App):
+class ViewerApp(App[int]):
     BINDINGS = [
         Binding("q,escape", "quit", "Quit"),
         Binding("ctrl+c", "quit", "Quit", show=False),
@@ -230,7 +230,7 @@ class ViewerApp(App):
     def run_viewer(self) -> int:
         if self._source == "file" and not Path(self.config["path"]).is_file():
             print(
-                f"zsh-ai-view: '{self.config['path']}' not found",
+                f"mdview: '{self.config['path']}' not found",
                 file=sys.stderr,
             )
             return 2

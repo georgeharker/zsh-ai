@@ -38,7 +38,8 @@ _zsh_ai_real_test() {
 
     print -ru2 -- "probing $endpoint with model=$model"
     if [[ -n "$api_key_env" ]]; then
-        local _present=$([[ -n "${(P)api_key_env}" ]] && print -- set || print -- "NOT SET")
+        local _present=NOT\ SET
+        [[ -n "${(P)api_key_env}" ]] && _present=set
         print -ru2 -- "  api_key_env: $api_key_env (\$$api_key_env $_present)"
     elif [[ -n "$api_key" ]]; then
         print -ru2 -- "  api_key: (${#api_key} chars, inline)"

@@ -2,13 +2,13 @@
 # tests/experiments/feed_viewer.zsh — drip a markdown file into a log
 # file at adjustable cadence, optionally touching a done-flag at end.
 #
-# Lets bin/zsh-ai-view be exercised against realistic streamed input
+# Lets bin/mdview be exercised against realistic streamed input
 # without firing the LLM — useful for tuning render perf, debounce,
 # done-flag handling, scroll/follow UX. Pairs naturally with the
 # viewer:
 #
 #   # terminal A — start the viewer following an empty log:
-#   ./bin/zsh-ai-view --file /tmp/v.log --done-file /tmp/v.done --follow
+#   ./bin/mdview --file /tmp/v.log --done-file /tmp/v.done --follow
 #
 #   # terminal B — drip a sample file in:
 #   zsh tests/experiments/feed_viewer.zsh sample.md /tmp/v.log /tmp/v.done \
@@ -18,7 +18,7 @@
 #
 #   log=$(mktemp); done="${log}.done"
 #   zsh tests/experiments/feed_viewer.zsh sample.md "$log" "$done" --delay 0.15 &!
-#   ./bin/zsh-ai-view --file "$log" --done-file "$done" --follow
+#   ./bin/mdview --file "$log" --done-file "$done" --follow
 #   rm -f "$log" "$done"
 #
 # Args (positional):

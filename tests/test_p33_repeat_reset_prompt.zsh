@@ -6,6 +6,7 @@
 # Reproduces the "left it for a while, hit ^C, saw 18 copies of the hint"
 # symptom by simulating whatever periodic mechanism is doing the resets.
 
+# shuck: disable=C001   # TEST_POST_SOURCE is read by pty_harness on PTY spawn
 TEST_POST_SOURCE='
 # Multi-line prompt with RPROMPT — closer to real-world setups. The
 # harness marker has to stay so pty_spawn detects ready.

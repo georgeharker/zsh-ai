@@ -26,9 +26,11 @@ class CommonArgs(BridgeArgs):
     no_stream: bool
 
 
-def build_client(args: BridgeArgs):
+def build_client(args: BridgeArgs) -> Any:
     """Construct the OpenAI client. Imports inside so ``--help`` works
-    even before ``uv sync`` has installed the dependency."""
+    even before ``uv sync`` has installed the dependency. Return type
+    is ``Any`` to avoid a hard import of ``openai.OpenAI`` at module
+    load (which would defeat the deferred-import dance below)."""
     try:
         from openai import OpenAI
     except ImportError:

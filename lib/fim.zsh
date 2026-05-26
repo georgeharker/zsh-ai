@@ -81,7 +81,9 @@ _zsh_ai_fim_clean_response() {
     local s
     for s in "${stops[@]}"; do
         [[ -z "$s" ]] && continue
-        txt="${txt%%${s}*}"
+        # Quote `${s}` inside the expansion so a stop-token containing
+        # glob chars (* ? [) is matched literally, not as a pattern.
+        txt="${txt%%"${s}"*}"
     done
     print -r -- "$txt"
 }
@@ -127,7 +129,7 @@ _zsh_ai_fim_insert() {
 
 # Async callback. Fires when LLM call completes; REPLY holds raw response.
 _zsh_ai_fim_complete() {
-    local completion="$REPLY"
+    local completion="$REPLY"   # shuck: ignore=C156   # the singular REPLY, not array `reply`
     completion="$(_zsh_ai_fim_clean_response "$completion")"
     completion="${completion#$'\n'}"
 

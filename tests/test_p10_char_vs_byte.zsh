@@ -9,6 +9,8 @@
 source "${0:A:h}/lib/pty_harness.zsh"
 trap pty_cleanup_all EXIT
 
+# shuck: disable=C001   # TEST_POST_SOURCE is read by pty_harness on PTY spawn
+# shuck: disable=C005   # the body intentionally stays literal; pty_harness eval's it
 TEST_POST_SOURCE='
 function _probe() {
     BUFFER=""

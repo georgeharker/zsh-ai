@@ -9,7 +9,7 @@ trap pty_cleanup_all EXIT
 
 repo_root=${0:A:h:h}
 export ZSH_AI_BRIDGE_BIN="${repo_root}/tests/mocks/zsh-ai-llm-mock"
-export ZSH_AI_VIEWER_BIN="${repo_root}/tests/mocks/zsh-ai-view-mock"
+export ZSH_AI_MDVIEW_BIN="${repo_root}/tests/mocks/zsh-ai-view-mock"
 export ZSH_AI_TEST_CONTENT=''
 export ZSH_AI_TEST_THINKING=''
 

@@ -1,4 +1,4 @@
-"""argparse + dispatch for ``zsh-ai-view``."""
+"""argparse + dispatch for ``mdview``."""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +9,7 @@ from .app import ViewArgs, ViewerApp
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="zsh-ai-view",
+        prog="mdview",
         description="Modal viewer for the zsh-ai bridge's thinking output.",
     )
     p.add_argument(

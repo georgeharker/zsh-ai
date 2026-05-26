@@ -14,7 +14,7 @@ repo_root=${0:A:h:h}
 
 # Mock bridge + viewer.
 export ZSH_AI_BRIDGE_BIN="${repo_root}/tests/mocks/zsh-ai-llm-mock"
-export ZSH_AI_VIEWER_BIN="${repo_root}/tests/mocks/zsh-ai-view-mock"
+export ZSH_AI_MDVIEW_BIN="${repo_root}/tests/mocks/zsh-ai-view-mock"
 
 # Mock content (3 ask-mode candidates) + thinking — pass via FILE paths
 # (multi-line env *values* get eval'd by zpty's argv re-quoting).

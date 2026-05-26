@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# lib/async.zsh — async LLM calls for ZLE widgets.
+# lib/async.zsh — async LLM calls for ZLE widgets (FIM only).
 #
 # Architecture: tempfile + sentinel + heartbeat polling.
 #
@@ -16,6 +16,10 @@
 #     state-aware keymap and check `_zsh_ai_async_running` in their
 #     widgets to decide what to do.
 #
+# Scope: the scratchpad (ask/modify/question) used to live here too,
+# but now runs synchronously around the foreground viewer — it no
+# longer goes through this layer. FIM is the only remaining consumer.
+#
 # Why not coproc: coproc conflicts with other plugins that also use &p
 # (e.g. zsh-pkg-update-nag), and zle -F doesn't fire on coproc EOF
 # reliably across zsh versions.
@@ -28,9 +32,6 @@ typeset -g  _zsh_ai_async_tick_pid=0
 typeset -g  _zsh_ai_async_tick_fd=0
 typeset -g  _zsh_ai_async_label=""
 typeset -g  _zsh_ai_async_callback=""
-typeset -g  _zsh_ai_async_progress_cb=""        # per-tick progress callback (optional)
-typeset -gi _zsh_ai_async_extra_fd=0            # extra fd registered with zle -F (e.g. thinking fifo)
-typeset -g  _zsh_ai_async_extra_handler=""      # widget that handles bytes on that fd
 typeset -gi _zsh_ai_async_frame=1
 typeset -ga _zsh_ai_async_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
 
@@ -63,22 +64,23 @@ _zsh_ai_async_run() {
     local label="$1"; shift
     local callback="$1"; shift
 
-    local outfile=$(mktemp -t zsh-ai-out.XXXXXX) || return 1
-    local donefile="${outfile}.done"
+    # Split declare from assign: `local var=$(cmd) || return` doesn't
+    # catch cmd's failure — zsh's `local` swallows the subshell exit
+    # code, same as bash.
+    local outfile donefile
+    outfile=$(mktemp "$_ZSH_AI_TMPDIR/out.XXXXXX") || return 1
+    donefile="${outfile}.done"
 
     # Run the command in a backgrounded subshell. Its stdout is captured
-    # into outfile (the callback reads it via REPLY). Stderr is dropped
-    # — bridge errors land on the user's terminal anyway through stderr
-    # passthrough at the parent shell level.
-    # Bridge stderr is NOT suppressed — connection errors, model
-    # failures etc. should reach the user's terminal so they know why
-    # the spinner finished with no result.
+    # into outfile (the callback reads it via REPLY). Bridge stderr is
+    # NOT suppressed — connection errors etc. should reach the user's
+    # terminal so they know why the spinner finished with no result.
     ( "$@" > "$outfile"; touch "$donefile" ) &!
     local pid=$!
 
     # Heartbeat fifo. RW open with `<>` so we don't block waiting for
     # the writer; then unlink the path — fd survives.
-    local tick_pipe=$(mktemp -u -t zsh-ai-tick.XXXXXX)
+    local tick_pipe=$(mktemp -u "$_ZSH_AI_TMPDIR/tick.XXXXXX")
     mkfifo "$tick_pipe"
     local tick_fd
     exec {tick_fd}<> "$tick_pipe"
@@ -96,20 +98,9 @@ _zsh_ai_async_run() {
     _zsh_ai_async_tick_fd=$tick_fd
     _zsh_ai_async_label="$label"
     _zsh_ai_async_callback="$callback"
-    _zsh_ai_async_progress_cb="${_zsh_ai_async_progress:-}"
-    _zsh_ai_async_extra_fd=${_zsh_ai_async_extra_fd_request:-0}
-    _zsh_ai_async_extra_handler="${_zsh_ai_async_extra_handler_request:-}"
     _zsh_ai_async_frame=1
 
     zle -F $tick_fd _zsh_ai_async_on_tick
-
-    # Optional extra fd: caller (e.g. scratchpad's thinking fifo) sets
-    # `_zsh_ai_async_extra_fd_request` + `_..._handler_request` before
-    # _zsh_ai_async_run, and we register a zle -F watcher so the handler
-    # fires whenever bytes are readable — push-based, no polling cost.
-    if (( _zsh_ai_async_extra_fd > 0 )) && [[ -n "$_zsh_ai_async_extra_handler" ]]; then
-        zle -F $_zsh_ai_async_extra_fd $_zsh_ai_async_extra_handler
-    fi
 
     _zsh_ai_async_render_spinner
     zle -R
@@ -125,7 +116,6 @@ _zsh_ai_async_cancel() {
     local pid=$_zsh_ai_async_pid
     local tpid=$_zsh_ai_async_tick_pid
     local tfd=$_zsh_ai_async_tick_fd
-    local efd=$_zsh_ai_async_extra_fd
     local outfile=$_zsh_ai_async_outfile
     local donefile=$_zsh_ai_async_donefile
 
@@ -134,14 +124,13 @@ _zsh_ai_async_cancel() {
     # see the error, not silently muddle through.
     (( pid > 0 ))  && kill $pid
     (( tpid > 0 )) && kill $tpid
-    (( tfd > 0 ))  && { zle -F -w $tfd; exec {tfd}<&-; }
     # CRITICAL: do NOT add `2>/dev/null` to bare `exec` lines that
     # modify file descriptors. `exec` with no command applies its
     # redirections to the CURRENT SHELL permanently — so combining
     # the fd-close with `2>/dev/null` would redirect the interactive
     # shell's stderr to /dev/null forever, breaking unrelated TUIs
     # (e.g. textual apps that probe stderr.isatty()).
-    (( efd > 0 ))  && { zle -F -w $efd; exec {efd}<&-; }
+    (( tfd > 0 ))  && { zle -F -w $tfd; exec {tfd}<&-; }
     rm -f "$outfile" "$donefile"
 
     _zsh_ai_async_reset_state
@@ -156,11 +145,8 @@ _zsh_ai_async_reset_state() {
     _zsh_ai_async_donefile=""
     _zsh_ai_async_tick_pid=0
     _zsh_ai_async_tick_fd=0
-    _zsh_ai_async_extra_fd=0
-    _zsh_ai_async_extra_handler=""
     _zsh_ai_async_label=""
     _zsh_ai_async_callback=""
-    _zsh_ai_async_progress_cb=""
     _zsh_ai_async_frame=1
 }
 
@@ -192,8 +178,10 @@ _zsh_ai_async_complete() {
 _zsh_ai_async_on_tick() {
     local fd="$1"
 
-    local discard
-    IFS= read -k 1 -t 0 -u $fd discard 2>/dev/null
+    # Drain one byte from the heartbeat fifo; we don't care about
+    # the value — it just tells us another tick fired. read writes
+    # to $REPLY by default when no var is supplied.
+    IFS= read -k 1 -t 0 -u $fd 2>/dev/null
 
     if [[ -n "$_zsh_ai_async_donefile" && -f "$_zsh_ai_async_donefile" ]]; then
         _zsh_ai_async_complete
@@ -205,13 +193,6 @@ _zsh_ai_async_on_tick() {
         # with a bare `exec {fd}<&-`; it leaks the redirect into the
         # parent shell.
         exec {fd}<&-
-        if (( _zsh_ai_async_extra_fd > 0 )); then
-            local efd=$_zsh_ai_async_extra_fd
-            zle -F -w $efd
-            exec {efd}<&-
-            _zsh_ai_async_extra_fd=0
-            _zsh_ai_async_extra_handler=""
-        fi
         _zsh_ai_async_tick_pid=0
         _zsh_ai_async_tick_fd=0
         _zsh_ai_async_label=""
@@ -220,18 +201,7 @@ _zsh_ai_async_on_tick() {
     fi
 
     _zsh_ai_async_running || return 0
-
-    # Progress hook: if a caller registered one (e.g. scratchpad's
-    # stream-progress display), give it the chance to set POSTDISPLAY.
-    # If it returns 0 we trust it owns the display this tick; otherwise
-    # fall back to the standard spinner.
-    if [[ -n "$_zsh_ai_async_progress_cb" ]] \
-       && (( $+functions[$_zsh_ai_async_progress_cb] )) \
-       && "$_zsh_ai_async_progress_cb"; then
-        :
-    else
-        _zsh_ai_async_render_spinner
-    fi
+    _zsh_ai_async_render_spinner
     zle -R
     return 0
 }

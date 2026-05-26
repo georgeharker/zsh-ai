@@ -4,30 +4,25 @@
 
 source "${0:A:h}/lib/pty_harness.zsh"
 
-TEST_AI_RESPONSE_FILE=$(mktemp -t zsh-ai-test-resp.XXXXXX)
-{
-    print -r -- "find ."
-    print -r -- "ls -la"
-} > "$TEST_AI_RESPONSE_FILE"
+repo_root=${0:A:h:h}
+export ZSH_AI_BRIDGE_BIN="${repo_root}/tests/mocks/zsh-ai-llm-mock"
+export ZSH_AI_MDVIEW_BIN="${repo_root}/tests/mocks/zsh-ai-view-mock"
 
-TEST_POST_SOURCE='
-_zsh_ai_async_run() {
-    local label="$1"; shift
-    local callback="$1"; shift
-    REPLY="$("$@" 2>/dev/null)"
-    [[ -n "$callback" ]] && (( $+functions[$callback] )) && "$callback"
-    return 0
-}
-_zsh_ai_async_running() { return 1; }
-'
+content_file=$(mktemp -t zshai-content.XXXXXX)
+cat >"$content_file" <<'EOF'
+find .
+ls -la
+EOF
+export ZSH_AI_TEST_CONTENT_FILE="$content_file"
 
-trap "rm -f $TEST_AI_RESPONSE_FILE; pty_cleanup_all" EXIT
+trap 'rm -f "$content_file"; pty_cleanup_all' EXIT
 
 pty_spawn shellA || pty_fail "spawn"
 
 pty_press_keys shellA $'\030a'        # ^Xa
 pty_press_keys shellA "test"
 pty_press_keys shellA $'\r'           # submit → select state
+sleep 0.8
 
 pty_inspect shellA || pty_fail "inspect"
 pty_assert_eq "state" "select" "${_pty_fields[SCRATCH_STATE]}" || pty_fail ""

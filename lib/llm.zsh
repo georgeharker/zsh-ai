@@ -8,9 +8,6 @@
 #   _zsh_ai_chat        sync/streaming chat → stdout (caller pipes or
 #                       captures). Pass --thinking inline or none to
 #                       control reasoning routing.
-#   _zsh_ai_chat_split  chat with content → stdout, thinking → file.
-#                       Used by the async scratchpad path where the
-#                       progress hook polls the thinking file.
 #   _zsh_ai_completion  text-completions (FIM) → stdout.
 #
 # Config resolution (`_zsh_ai_resolve`, `_zsh_ai_resolve_thinking`) lives
@@ -66,25 +63,6 @@ _zsh_ai_chat() {
     [[ -n "$system" ]] && cmd+=(--system "$system")
     cmd+=("$@")
     "${cmd[@]}"
-}
-
-# ── _zsh_ai_chat_split ──────────────────────────────────────────────────
-# Streaming chat for the ask/modify async path: content → stdout (which
-# the async layer captures into outfile), thinking → a separate file
-# the progress hook polls. Empty thinking file path → --thinking none.
-#
-#   $1 model         $2 system (may be "")     $3 user
-#   $4 max_tokens    $5 temperature            $6 thinking_file ("" = drop)
-_zsh_ai_chat_split() {
-    local model="$1" system="$2" user="$3" max_tokens="$4" temp="$5" think_file="$6"
-    local -a thinking_args
-    if [[ -n "$think_file" ]]; then
-        thinking_args=(--thinking "$think_file")
-    else
-        thinking_args=(--thinking none)
-    fi
-    _zsh_ai_chat "$model" "$system" "$user" "$max_tokens" "$temp" \
-        --content - "${thinking_args[@]}"
 }
 
 # ── _zsh_ai_completion ──────────────────────────────────────────────────

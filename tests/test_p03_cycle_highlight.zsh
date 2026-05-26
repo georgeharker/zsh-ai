@@ -4,31 +4,26 @@
 
 source "${0:A:h}/lib/pty_harness.zsh"
 
-TEST_AI_RESPONSE_FILE=$(mktemp -t zsh-ai-test-resp.XXXXXX)
-{
-    print -r -- "ls -la"
-    print -r -- "find ."
-    print -r -- "du -sh"
-} > "$TEST_AI_RESPONSE_FILE"
+repo_root=${0:A:h:h}
+export ZSH_AI_BRIDGE_BIN="${repo_root}/tests/mocks/zsh-ai-llm-mock"
+export ZSH_AI_MDVIEW_BIN="${repo_root}/tests/mocks/zsh-ai-view-mock"
 
-TEST_POST_SOURCE='
-_zsh_ai_async_run() {
-    local label="$1"; shift
-    local callback="$1"; shift
-    REPLY="$("$@" 2>/dev/null)"
-    [[ -n "$callback" ]] && (( $+functions[$callback] )) && "$callback"
-    return 0
-}
-_zsh_ai_async_running() { return 1; }
-'
+content_file=$(mktemp -t zshai-content.XXXXXX)
+cat >"$content_file" <<'EOF'
+ls -la
+find .
+du -sh
+EOF
+export ZSH_AI_TEST_CONTENT_FILE="$content_file"
 
-trap "rm -f $TEST_AI_RESPONSE_FILE; pty_cleanup_all" EXIT
+trap 'rm -f "$content_file"; pty_cleanup_all' EXIT
 
 pty_spawn shellA || pty_fail "spawn"
 
 pty_press_keys shellA $'\030a'           # ^Xa
 pty_press_keys shellA "test"
 pty_press_keys shellA $'\r'
+sleep 0.8
 
 pty_inspect shellA
 pty_assert_eq "initial index" "1" "${_pty_fields[SCRATCH_INDEX]}" || pty_fail ""
@@ -61,7 +56,7 @@ print -u1 "✓ single SEL range: ${sel_ranges[1]}"
 
 # Compute expected start position of row 2's ▶ (in CHARS).
 # Row 1 is non-selected: "       <cand>\n" → 7 + len(cand) + 1 chars.
-local BUF="${_pty_fields[BUFFER]}"
+local BUF="${_pty_fields[BUFFER]}"   # shuck: ignore=C001   # used via $#BUF below
 local buf_len=$#BUF
 local cand1_len=$#_pty_cand[1]      # 6 for "ls -la"
 local row1_len=$((7 + cand1_len + 1))

@@ -21,15 +21,29 @@
 typeset -g _ZSH_AI_DIR="${${(%):-%x}:A:h}"
 
 # Order matters: config first (other libs depend on the readers).
+# Scratchpad is split across three files for navigability — display
+# (build / apply / hook) and the question-mode flow live in their own
+# modules; main scratchpad.zsh has state + entry widgets + bridge
+# orchestration. Order between the three doesn't matter since they
+# just define functions.
+# shuck: disable=C003   # `$_ZSH_AI_DIR` is resolved at runtime; static analysis can't follow
 source "$_ZSH_AI_DIR/lib/config.zsh"
+# shuck: disable=C003
 source "$_ZSH_AI_DIR/lib/llm.zsh"
+# shuck: disable=C003
 source "$_ZSH_AI_DIR/lib/async.zsh"
+# shuck: disable=C003
+source "$_ZSH_AI_DIR/lib/scratchpad_display.zsh"
+# shuck: disable=C003
 source "$_ZSH_AI_DIR/lib/scratchpad.zsh"
+# shuck: disable=C003
+source "$_ZSH_AI_DIR/lib/scratchpad_question.zsh"
+# shuck: disable=C003
 source "$_ZSH_AI_DIR/lib/fim.zsh"
 
 # ── CLI entrypoint ──────────────────────────────────────────────────────────
 # One-shot CLI for shell-scripting and ad-hoc questions. Defaults to
-# rendering the answer as markdown via bin/zsh-ai-render. For raw
+# rendering the answer as markdown via bin/mdrender. For raw
 # (unrendered) output, pass --raw. For interactive widgets, use
 # ^Xa / ^Xm / ^Xq from any prompt.
 zsh-ai() {
@@ -48,9 +62,9 @@ zsh-ai() {
 Usage:
   zsh-ai [--raw|--view] <question>
         ask a one-shot question
-          (default)  pretty-print the answer via bin/zsh-ai-render
+          (default)  pretty-print the answer via bin/mdrender
           --raw      stream raw bridge output to stdout (no rendering)
-          --view     open the answer in bin/zsh-ai-view (scrollable modal)
+          --view     open the answer in bin/mdview (scrollable modal)
   zsh-ai -h | help    this message
 
 Interactively in zsh:
@@ -74,16 +88,16 @@ EOF
     if (( view )); then
         # Stream bridge output to a temp file, then open in the viewer.
         local log
-        log=$(mktemp -t zsh-ai-cli.XXXXXX)
+        log=$(mktemp "$_ZSH_AI_TMPDIR/cli.XXXXXX")
         _zsh_ai_chat "$model" "$sys" "$*" 1024 0.2 > "$log"
-        "$_ZSH_AI_DIR/bin/zsh-ai-view" "$log" --no-exit-on-eof \
+        "$_ZSH_AI_DIR/bin/mdview" "$log" --no-exit-on-eof \
             --title "answer"
         rm -f "$log"
     elif (( raw )); then
         _zsh_ai_chat "$model" "$sys" "$*" 1024 0.2
     else
         _zsh_ai_chat "$model" "$sys" "$*" 1024 0.2 \
-            | "$_ZSH_AI_DIR/bin/zsh-ai-render" --color always
+            | "$_ZSH_AI_DIR/bin/mdrender" --color always
     fi
 }
 

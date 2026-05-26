@@ -1,7 +1,7 @@
-"""zsh-ai-render — pipe stdin through rich's markdown renderer to stdout.
+"""mdrender — pipe stdin through rich's markdown renderer to stdout.
 
 A standalone CLI that mirrors the rendering path used by
-``bin/zsh-ai-view``. Two roles:
+``bin/mdview``. Two roles:
 
   1. Validation tool: lets us see exactly how the rich pipeline
      renders a markdown stream, headlessly, without firing the LLM
@@ -20,7 +20,7 @@ Two modes:
                          small chunks don't thrash the terminal.
                          Note: Live repaints in place, so very long
                          documents may overflow visible area — use
-                         bin/zsh-ai-view (alt-screen + scroll) for
+                         bin/mdview (alt-screen + scroll) for
                          documents larger than one screenful.
 """
 from __future__ import annotations
@@ -35,12 +35,12 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.text import Text
 
-from .stream_render import LiveMarkdownStream, Mode
+from .stream import LiveMarkdownStream, Mode
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(
-        prog="zsh-ai-render",
+        prog="mdrender",
         description="Pipe stdin through rich's markdown renderer to stdout.",
     )
     p.add_argument(
@@ -70,7 +70,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = p.parse_args(argv)
 
     if args.pager and args.stream:
-        print("zsh-ai-render: --pager and --stream are incompatible",
+        print("mdrender: --pager and --stream are incompatible",
               file=sys.stderr)
         return 2
 

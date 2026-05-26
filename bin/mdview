@@ -1,0 +1,10 @@
+#!/usr/bin/env zsh
+# bin/mdview — modal markdown viewer for streamed thinking / answer output.
+#
+# Spawned by the scratchpad ^Xa/^Xm/^Xq widgets (and re-launched via
+# ^Xv) to present a fifo / file / stdin in an alt-screen or inline
+# modal box with scroll, follow, and auto-dismiss on EOF.
+#
+# Setup: `uv sync` in the plugin directory.
+
+exec "${0:A:h:h}/.venv/bin/python" -m zsh_ai.view "$@"

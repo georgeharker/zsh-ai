@@ -9,32 +9,33 @@
 
 source "${0:A:h}/lib/pty_harness.zsh"
 
-TEST_AI_RESPONSE_FILE=$(mktemp -t zsh-ai-test-resp.XXXXXX)
-{
-    print -r -- "ls -la"
-    print -r -- "find ."
-    print -r -- "du -sh"
-} > "$TEST_AI_RESPONSE_FILE"
+repo_root=${0:A:h:h}
+export ZSH_AI_BRIDGE_BIN="${repo_root}/tests/mocks/zsh-ai-llm-mock"
+export ZSH_AI_MDVIEW_BIN="${repo_root}/tests/mocks/zsh-ai-view-mock"
 
-TEST_POST_SOURCE='
-KEYTIMEOUT=1   # 10ms — common in vi-mode setups; exposes \e-prefix bugs.
-_zsh_ai_async_run() {
-    local label="$1"; shift
-    local callback="$1"; shift
-    REPLY="$("$@" 2>/dev/null)"
-    [[ -n "$callback" ]] && (( $+functions[$callback] )) && "$callback"
-    return 0
-}
-_zsh_ai_async_running() { return 1; }
-'
+content_file=$(mktemp -t zshai-content.XXXXXX)
+cat >"$content_file" <<'EOF'
+ls -la
+find .
+du -sh
+EOF
+export ZSH_AI_TEST_CONTENT_FILE="$content_file"
 
-trap "rm -f $TEST_AI_RESPONSE_FILE; pty_cleanup_all" EXIT
+# 10ms KEYTIMEOUT — common in vi-mode setups; exposes \e-prefix bugs
+# where a bare \e binding fires its widget before the rest of \e[A/B
+# arrives. Injected via TEST_POST_SOURCE so it lands in the spawned
+# shell after the plugin's keybindings are installed.
+# shuck: disable=C001   # TEST_POST_SOURCE is read by pty_harness on PTY spawn
+TEST_POST_SOURCE='KEYTIMEOUT=1'
+
+trap 'rm -f "$content_file"; pty_cleanup_all' EXIT
 
 pty_spawn shellA || pty_fail "spawn"
 
 pty_press_keys shellA $'\030a'      # ^Xa
 pty_press_keys shellA "test"
 pty_press_keys shellA $'\r'         # submit
+sleep 0.8
 
 pty_inspect shellA
 pty_assert_eq "initial index" "1" "${_pty_fields[SCRATCH_INDEX]}" || pty_fail ""

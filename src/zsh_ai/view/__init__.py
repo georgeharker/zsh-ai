@@ -1,4 +1,4 @@
-"""zsh-ai-view — modal viewer for the bridge's streamed thinking output.
+"""mdview — modal viewer for the bridge's streamed thinking output.
 
 A standalone alt-screen TUI that:
   - opens a log file and renders it inside a centred Panel
