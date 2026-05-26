@@ -24,12 +24,13 @@
 typeset -g  _zsh_ai_async_pid=0
 typeset -g  _zsh_ai_async_outfile=""
 typeset -g  _zsh_ai_async_donefile=""
-typeset -g  _zsh_ai_async_rendered_outfile=""   # tee + renderer second-half output
 typeset -g  _zsh_ai_async_tick_pid=0
 typeset -g  _zsh_ai_async_tick_fd=0
 typeset -g  _zsh_ai_async_label=""
 typeset -g  _zsh_ai_async_callback=""
 typeset -g  _zsh_ai_async_progress_cb=""        # per-tick progress callback (optional)
+typeset -gi _zsh_ai_async_extra_fd=0            # extra fd registered with zle -F (e.g. thinking fifo)
+typeset -g  _zsh_ai_async_extra_handler=""      # widget that handles bytes on that fd
 typeset -gi _zsh_ai_async_frame=1
 typeset -ga _zsh_ai_async_frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
 
@@ -64,24 +65,12 @@ _zsh_ai_async_run() {
 
     local outfile=$(mktemp -t zsh-ai-out.XXXXXX) || return 1
     local donefile="${outfile}.done"
-    local rendered=""
 
-    # Optional streaming-render mode: caller sets `_zsh_ai_async_renderer`
-    # (dynamic-scoped) to a renderer command (e.g. `mdansi --stream`). The
-    # subshell pipes the command's STREAMING stdout through tee — one half
-    # captured to outfile (caller reads via REPLY), the other half through
-    # the renderer to a `.rendered` file (caller reads via REPLY_RENDERED).
-    # The command must be a streaming producer (e.g. `_zsh_ai_chat_stream`).
-    if [[ -n "${_zsh_ai_async_renderer:-}" ]]; then
-        rendered="${outfile}.rendered"
-        local renderer="$_zsh_ai_async_renderer"
-        ( "$@" 2>/dev/null \
-            | tee "$outfile" \
-            | ${(z)renderer} > "$rendered" 2>/dev/null
-          touch "$donefile" ) &!
-    else
-        ( "$@" > "$outfile" 2>/dev/null; touch "$donefile" ) &!
-    fi
+    # Run the command in a backgrounded subshell. Its stdout is captured
+    # into outfile (the callback reads it via REPLY). Stderr is dropped
+    # — bridge errors land on the user's terminal anyway through stderr
+    # passthrough at the parent shell level.
+    ( "$@" > "$outfile" 2>/dev/null; touch "$donefile" ) &!
     local pid=$!
 
     # Heartbeat fifo. RW open with `<>` so we don't block waiting for
@@ -100,15 +89,24 @@ _zsh_ai_async_run() {
     _zsh_ai_async_pid=$pid
     _zsh_ai_async_outfile="$outfile"
     _zsh_ai_async_donefile="$donefile"
-    _zsh_ai_async_rendered_outfile="$rendered"
     _zsh_ai_async_tick_pid=$tpid
     _zsh_ai_async_tick_fd=$tick_fd
     _zsh_ai_async_label="$label"
     _zsh_ai_async_callback="$callback"
     _zsh_ai_async_progress_cb="${_zsh_ai_async_progress:-}"
+    _zsh_ai_async_extra_fd=${_zsh_ai_async_extra_fd_request:-0}
+    _zsh_ai_async_extra_handler="${_zsh_ai_async_extra_handler_request:-}"
     _zsh_ai_async_frame=1
 
     zle -F $tick_fd _zsh_ai_async_on_tick
+
+    # Optional extra fd: caller (e.g. scratchpad's thinking fifo) sets
+    # `_zsh_ai_async_extra_fd_request` + `_..._handler_request` before
+    # _zsh_ai_async_run, and we register a zle -F watcher so the handler
+    # fires whenever bytes are readable — push-based, no polling cost.
+    if (( _zsh_ai_async_extra_fd > 0 )) && [[ -n "$_zsh_ai_async_extra_handler" ]]; then
+        zle -F $_zsh_ai_async_extra_fd $_zsh_ai_async_extra_handler
+    fi
 
     _zsh_ai_async_render_spinner
     zle -R 2>/dev/null
@@ -124,15 +122,19 @@ _zsh_ai_async_cancel() {
     local pid=$_zsh_ai_async_pid
     local tpid=$_zsh_ai_async_tick_pid
     local tfd=$_zsh_ai_async_tick_fd
+    local efd=$_zsh_ai_async_extra_fd
     local outfile=$_zsh_ai_async_outfile
     local donefile=$_zsh_ai_async_donefile
-    local rendered=$_zsh_ai_async_rendered_outfile
 
     kill $pid  2>/dev/null
     kill $tpid 2>/dev/null
     zle -F -w $tfd 2>/dev/null
     exec {tfd}<&- 2>/dev/null
-    rm -f "$outfile" "$donefile" "$rendered" 2>/dev/null
+    if (( efd > 0 )); then
+        zle -F -w $efd 2>/dev/null
+        exec {efd}<&- 2>/dev/null
+    fi
+    rm -f "$outfile" "$donefile" 2>/dev/null
 
     _zsh_ai_async_reset_state
     return 0
@@ -144,9 +146,10 @@ _zsh_ai_async_reset_state() {
     _zsh_ai_async_pid=0
     _zsh_ai_async_outfile=""
     _zsh_ai_async_donefile=""
-    _zsh_ai_async_rendered_outfile=""
     _zsh_ai_async_tick_pid=0
     _zsh_ai_async_tick_fd=0
+    _zsh_ai_async_extra_fd=0
+    _zsh_ai_async_extra_handler=""
     _zsh_ai_async_label=""
     _zsh_ai_async_callback=""
     _zsh_ai_async_progress_cb=""
@@ -158,26 +161,16 @@ _zsh_ai_async_reset_state() {
 # display change reaches the terminal (same flush path as the spinner).
 _zsh_ai_async_complete() {
     local outfile=$_zsh_ai_async_outfile
-    local rendered=$_zsh_ai_async_rendered_outfile
     local callback="$_zsh_ai_async_callback"
 
     REPLY="$(<$outfile)"
-    # If a streaming-render pipeline was used, surface the rendered text
-    # to the callback via REPLY_RENDERED. Empty when the non-streaming
-    # path was used.
-    if [[ -n "$rendered" && -f "$rendered" ]]; then
-        REPLY_RENDERED="$(<$rendered)"
-    else
-        REPLY_RENDERED=""
-    fi
-    rm -f "$outfile" "$_zsh_ai_async_donefile" "$rendered" 2>/dev/null
+    rm -f "$outfile" "$_zsh_ai_async_donefile" 2>/dev/null
 
     # Mark "not in flight" so callback's state-aware widgets see the
     # post-completion world.
     _zsh_ai_async_pid=0
     _zsh_ai_async_outfile=""
     _zsh_ai_async_donefile=""
-    _zsh_ai_async_rendered_outfile=""
 
     POSTDISPLAY=""
 
@@ -201,6 +194,13 @@ _zsh_ai_async_on_tick() {
         kill $_zsh_ai_async_tick_pid 2>/dev/null
         zle -F -w $fd 2>/dev/null
         exec {fd}<&- 2>/dev/null
+        if (( _zsh_ai_async_extra_fd > 0 )); then
+            local efd=$_zsh_ai_async_extra_fd
+            zle -F -w $efd 2>/dev/null
+            exec {efd}<&- 2>/dev/null
+            _zsh_ai_async_extra_fd=0
+            _zsh_ai_async_extra_handler=""
+        fi
         _zsh_ai_async_tick_pid=0
         _zsh_ai_async_tick_fd=0
         _zsh_ai_async_label=""

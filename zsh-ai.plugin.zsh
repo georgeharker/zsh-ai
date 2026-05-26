@@ -22,7 +22,7 @@ typeset -g _ZSH_AI_DIR="${${(%):-%x}:A:h}"
 
 # Order matters: config first (other libs depend on the readers).
 source "$_ZSH_AI_DIR/lib/config.zsh"
-source "$_ZSH_AI_DIR/lib/http.zsh"
+source "$_ZSH_AI_DIR/lib/llm.zsh"
 source "$_ZSH_AI_DIR/lib/async.zsh"
 source "$_ZSH_AI_DIR/lib/scratchpad.zsh"
 source "$_ZSH_AI_DIR/lib/fim.zsh"

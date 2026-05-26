@@ -95,7 +95,7 @@ _zsh_ai_fim_insert() {
     _zsh_ai_cfg_bool ':zsh-ai:fim' enabled yes || return 0
     _zsh_ai_async_running && return 0
 
-    # Per-feature endpoint/api_key override; see lib/http.zsh.
+    # Per-feature endpoint/api_key override; see lib/llm.zsh.
     local _zsh_ai_ctx=':zsh-ai:fim'
 
     local model

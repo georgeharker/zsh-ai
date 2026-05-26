@@ -1,0 +1,15 @@
+#!/bin/sh
+# bin/zsh-ai-llm — entry-point for the zsh-ai Python bridge.
+#
+# Execs the venv's python with `-m zsh_ai`, which dispatches via
+# src/zsh_ai/__main__.py → cli.main. Owning this file (rather than
+# letting [project.scripts] generate one) keeps the invocation script
+# free of the cargo-culted Windows-launcher suffix stripping that
+# setuptools / uv emit by default.
+#
+# Setup: `uv sync` in the plugin directory builds .venv/ with the
+# openai SDK and installs this package editable. After that, run
+# `bin/zsh-ai-llm --help` to verify.
+
+dir="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+exec "${dir}/.venv/bin/python" -m zsh_ai "$@"

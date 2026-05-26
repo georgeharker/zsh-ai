@@ -2,10 +2,11 @@
 # PTY harness for zsh-ai tests.
 #
 # Spawns interactive zsh under zpty with full env isolation, sources the
-# plugin, mocks _zsh_ai_chat / _zsh_ai_completion so tests don't need a
-# real LLM endpoint, and provides an inspector widget that reports the
-# current ZLE display state (PREDISPLAY, POSTDISPLAY, BUFFER, KEYMAP,
-# region_highlight) in machine-parseable form.
+# plugin, mocks the bridge wrappers (_zsh_ai_chat, _zsh_ai_chat_split,
+# _zsh_ai_completion) so tests don't need a real LLM endpoint, and
+# provides an inspector widget that reports the current ZLE display
+# state (PREDISPLAY, POSTDISPLAY, BUFFER, KEYMAP, region_highlight) in
+# machine-parseable form.
 #
 # Patterned after zsh-contextual-history's PTY harness. Lifecycle:
 #
@@ -69,10 +70,19 @@ source "$PTY_PLUGIN_PATH"
 # _TEST_AI_RESPONSE_FILE) — not via env content. This avoids zpty's argv
 # re-eval mangling multi-line strings (newlines in env values get parsed
 # as shell commands).
+#
+# _zsh_ai_chat_split is the ask/modify path; \$6 is the thinking-output
+# file (may be empty). If _TEST_AI_THINK_RESPONSE_FILE is set in the
+# spawned env, mirror it into the thinking file so progress-hook /
+# captured-thinking tests have something to read.
 _zsh_ai_chat() {
     [[ -f "\${_TEST_AI_RESPONSE_FILE:-}" ]] && cat "\$_TEST_AI_RESPONSE_FILE"
 }
-_zsh_ai_chat_stream() {
+_zsh_ai_chat_split() {
+    local think_file="\$6"
+    if [[ -n "\$think_file" && -f "\${_TEST_AI_THINK_RESPONSE_FILE:-}" ]]; then
+        cat "\$_TEST_AI_THINK_RESPONSE_FILE" >| "\$think_file"
+    fi
     [[ -f "\${_TEST_AI_RESPONSE_FILE:-}" ]] && cat "\$_TEST_AI_RESPONSE_FILE"
 }
 _zsh_ai_completion() {
@@ -176,6 +186,7 @@ pty_spawn() {
         LC_ALL="${LC_ALL:-en_US.UTF-8}" \
         LANG="${LANG:-en_US.UTF-8}" \
         _TEST_AI_RESPONSE_FILE="${TEST_AI_RESPONSE_FILE:-}" \
+        _TEST_AI_THINK_RESPONSE_FILE="${TEST_AI_THINK_RESPONSE_FILE:-}" \
         zsh --no-globalrcs -i
 
     local marker=${_pty_markers[$name]}

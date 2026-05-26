@@ -21,6 +21,10 @@
 # to a remembered "before" keymap — simpler, no state to leak across
 # accept-line boundaries.
 
+# sysread is in zsh/system. Load eagerly here — the watcher widget
+# can't load it lazily (would race against the first wake).
+zmodload zsh/system 2>/dev/null
+
 # ── State globals ───────────────────────────────────────────────────────────
 typeset -g  _zsh_ai_scratch_active=0
 typeset -g  _zsh_ai_scratch_state=""           # "instruction" | "select"
@@ -34,8 +38,9 @@ typeset -g  _zsh_ai_scratch_saved_buffer=""
 typeset -g  _zsh_ai_scratch_saved_cursor=0
 typeset -g  _zsh_ai_scratch_message=""         # transient status message (e.g. "[no candidates]")
 typeset -g  _zsh_ai_scratch_thinking_override=""  # "" = use config, "true" / "false" = force for next call
-typeset -g  _zsh_ai_scratch_thinking_content=""   # captured <think>...</think> from last response
-typeset -g  _zsh_ai_scratch_rendered_response=""  # mdansi-rendered ANSI of the full response (when stream-renderer used)
+typeset -g  _zsh_ai_scratch_thinking_content=""   # accumulated thinking text (appended live as bytes arrive)
+typeset -g  _zsh_ai_scratch_thinking_fifo=""      # path to fifo the bridge writes to (unlinked on cleanup)
+typeset -gi _zsh_ai_scratch_thinking_fd=0         # RW-opened fd on the fifo; zle -F watcher reads from here
 
 # ── Display builder + applier ───────────────────────────────────────────────
 # Single-path rendering: walks current state, emits text + style segments
@@ -163,21 +168,15 @@ _zsh_ai_scratch_build_display() {
         select)
             _build_post+=$'\n'   # leading separator
 
-            # Show extracted thinking above the candidate list when
-            # show_thinking=yes. Prefer the streaming-extracted version
-            # (from the async tee pipeline — same content the user saw
-            # materialising live) over the post-stream split (from
-            # _zsh_ai_scratch_split_thinking on REPLY). Display as plain
-            # text with 💭 line prefix, dim styling via region_highlight.
-            # Tail-N truncation (thinking_max_lines, default 20) keeps the
-            # display readable when the model is verbose.
+            # Show captured thinking above the candidate list when
+            # show_thinking=yes. The on_response callback slurped the
+            # bridge's thinking-output file into _scratch_thinking_content.
+            # Display as plain text with 💭 line prefix, dim styling via
+            # region_highlight. Tail-N truncation (thinking_max_lines,
+            # default 20) keeps the display readable when the model is
+            # verbose.
             if _zsh_ai_cfg_bool ':zsh-ai:scratch' show_thinking yes; then
-                local think_src=""
-                if [[ -n "$_zsh_ai_scratch_rendered_response" ]]; then
-                    think_src="$_zsh_ai_scratch_rendered_response"
-                elif [[ -n "$_zsh_ai_scratch_thinking_content" ]]; then
-                    think_src="$_zsh_ai_scratch_thinking_content"
-                fi
+                local think_src="$_zsh_ai_scratch_thinking_content"
                 if [[ -n "$think_src" ]]; then
                     local max_lines
                     max_lines="$(_zsh_ai_cfg ':zsh-ai:scratch' thinking_max_lines 20)"
@@ -341,26 +340,77 @@ _zsh_ai_scratch_kick_off() {
     local _zsh_ai_thinking_forced="$_zsh_ai_scratch_thinking_override"
     _zsh_ai_scratch_thinking_override=""
 
-    # Build the render pipeline: filter + renderer when a renderer is
-    # configured (resolve_pipeline returns the composed command). The
-    # async layer's tee setup runs this in a subshell. Empty pipeline
-    # → skip tee; just collect the stream into outfile.
-    local _zsh_ai_async_renderer="$(_zsh_ai_scratch_pipeline_ask)"
-    local _zsh_ai_async_progress=""
-    [[ -n "$_zsh_ai_async_renderer" ]] && _zsh_ai_async_progress=_zsh_ai_scratch_stream_progress
+    # Thinking pipe (fifo). Bridge writes reasoning chunks into it; we
+    # open RW from this shell so the writer never blocks for a reader,
+    # and register a zle -F watcher on the read fd so updates are
+    # push-based — bytes arriving on the pipe wake ZLE, which appends
+    # to _scratch_thinking_content and refreshes POSTDISPLAY. No 100 ms
+    # polling, no re-read-the-whole-file cost.
+    #
+    # Only allocated when show_thinking=yes; otherwise the bridge is
+    # told --thinking none and reasoning is dropped at the source.
+    local think_fifo=""
+    local -i think_fd=0
+    if _zsh_ai_cfg_bool ':zsh-ai:scratch' show_thinking yes; then
+        think_fifo=$(mktemp -u -t zsh-ai-think.XXXXXX)
+        if mkfifo "$think_fifo" 2>/dev/null; then
+            # `<>` RW open: the read side is up before the bridge opens
+            # the write side, so the bridge's open() returns immediately.
+            exec {think_fd}<> "$think_fifo"
+        else
+            think_fifo=""
+        fi
+    fi
+    _zsh_ai_scratch_thinking_fifo="$think_fifo"
+    _zsh_ai_scratch_thinking_fd=$think_fd
+    _zsh_ai_scratch_thinking_content=""
+
+    # Dynamic-scoped hand-off to async.zsh: register the watcher fd +
+    # handler when we have one.
+    local -i _zsh_ai_async_extra_fd_request=$think_fd
+    local _zsh_ai_async_extra_handler_request=""
+    (( think_fd > 0 )) && _zsh_ai_async_extra_handler_request=_zsh_ai_scratch_thinking_on_read
 
     _zsh_ai_async_run "thinking" _zsh_ai_scratch_on_response \
-        _zsh_ai_chat_stream "$model" "$system" "$user_msg" "$max_tokens" "$temp"
+        _zsh_ai_chat_split "$model" "$system" "$user_msg" "$max_tokens" "$temp" "$think_fifo"
     return 0
 }
 
-# Resolve the markdown-to-ANSI renderer command. Used by both:
-#   - ask/modify: in the async tee pipeline (chat_stream → tee → renderer)
-#   - question:   in the synchronous pipe (chat_stream → renderer → terminal)
-#
-# Whether the renderer is streaming-aware (mdansi) or batches at EOF
-# (glow, mdcat) only changes the UX (incremental vs after-EOF); the
-# pipeline shape is identical.
+# zle -F handler: fires whenever bytes are readable on the thinking
+# fifo. Non-blocking sysread, append to buffer, refresh POSTDISPLAY.
+# Must return 0 — non-zero unregisters.
+_zsh_ai_scratch_thinking_on_read() {
+    local fd="$1"
+    local chunk=""
+    # sysread loops until EAGAIN/empty. Larger buffer = fewer syscalls
+    # for a fast streamer; small enough to not block on tiny chunks.
+    while sysread -t 0 -c 4096 -i $fd chunk 2>/dev/null; do
+        [[ -z "$chunk" ]] && break
+        _zsh_ai_scratch_thinking_content+="$chunk"
+    done
+    # Tail-N truncate for display; the full buffer is preserved for the
+    # select-state render later.
+    local n="$(_zsh_ai_cfg ':zsh-ai:scratch' thinking_max_lines 20)"
+    (( n <= 0 )) && n=20
+    local -a lines=("${(@f)_zsh_ai_scratch_thinking_content}")
+    (( ${#lines} > n )) && lines=("${(@)lines[-n,-1]}")
+    local out=""
+    local l
+    for l in "${lines[@]}"; do
+        out+="     💭 ${l}"$'\n'
+    done
+
+    local frame="${_zsh_ai_async_frames[$_zsh_ai_async_frame]}"
+    (( _zsh_ai_async_frame = _zsh_ai_async_frame % ${#_zsh_ai_async_frames[@]} + 1 ))
+    POSTDISPLAY=$'\n\n'"${out}  ${frame} streaming…"
+    zle -R 2>/dev/null
+    return 0
+}
+
+# Resolve the markdown-to-ANSI renderer command. Used by question mode
+# (chat → renderer → terminal). Whether the renderer is streaming-aware
+# (mdansi) or batches at EOF (glow, mdcat) only changes UX, not the
+# pipeline shape.
 #
 # Auto-detection order: mdansi → glow → none. Override:
 #   zstyle ':zsh-ai:scratch' formatter 'mdansi --stream'
@@ -377,62 +427,6 @@ _zsh_ai_scratch_resolve_renderer() {
         fi
     fi
     print -r -- "$r"
-}
-
-# Async progress hook: called from on_tick (every ~100ms) while the LLM
-# call is streaming. Reads the extracted-thinking file produced by the
-# tee pipeline, takes the last N lines (configurable via
-# thinking_max_lines; default 20), formats each with a `💭 ` prefix,
-# and sets POSTDISPLAY so the user sees reasoning materialise live —
-# scrolled to the most recent.
-#
-# Return 0 if POSTDISPLAY was set, non-zero to fall back to the spinner.
-_zsh_ai_scratch_stream_progress() {
-    [[ -n "$_zsh_ai_async_rendered_outfile" ]] || return 1
-    [[ -s "$_zsh_ai_async_rendered_outfile" ]] || return 1
-    local raw
-    raw="$(<$_zsh_ai_async_rendered_outfile)"
-    [[ -z "$raw" ]] && return 1
-
-    local n="$(_zsh_ai_cfg ':zsh-ai:scratch' thinking_max_lines 20)"
-    (( n <= 0 )) && n=20
-    local -a lines=("${(@f)raw}")
-    (( ${#lines} > n )) && lines=("${(@)lines[-n,-1]}")
-
-    local out=""
-    local l
-    for l in "${lines[@]}"; do
-        out+="     💭 ${l}"$'\n'
-    done
-
-    local frame="${_zsh_ai_async_frames[$_zsh_ai_async_frame]}"
-    (( _zsh_ai_async_frame = _zsh_ai_async_frame % ${#_zsh_ai_async_frames[@]} + 1 ))
-    POSTDISPLAY=$'\n\n'"${out}  ${frame} streaming…"
-    return 0
-}
-
-# Split a raw response into (thinking, clean). All <think>…</think>
-# blocks are concatenated into the thinking output, joined by blank
-# lines if multiple. Remaining text goes into clean. Both are emitted
-# joined by a 0x1F separator. Pure zsh.
-_zsh_ai_scratch_split_thinking() {
-    local raw="$1"
-    local thinking="" clean="" before after inside
-    while [[ "$raw" == *'<think>'* ]]; do
-        before="${raw%%<think>*}"
-        after="${raw#*<think>}"
-        clean+="$before"
-        if [[ "$after" == *'</think>'* ]]; then
-            inside="${after%%</think>*}"
-            raw="${after#*</think>}"
-        else
-            inside="$after"
-            raw=""
-        fi
-        thinking+="${thinking:+$'\n\n'}${inside}"
-    done
-    clean+="$raw"
-    print -rn -- "${thinking}"$'\x1f'"${clean}"
 }
 
 # Parse REPLY (raw response from LLM) into the candidate list.
@@ -459,24 +453,21 @@ _zsh_ai_scratch_parse_candidates() {
 }
 
 # Async callback. Fires when the LLM call returns for ask/modify modes.
-# REPLY holds the raw response; REPLY_RENDERED holds the renderer's
-# output (when the tee + renderer path was active). Question mode does
-# not go through async — it streams synchronously from the widget.
+# REPLY holds the bridge's content stream (already split — no <think>
+# tags). Thinking text has been accumulating in _scratch_thinking_content
+# all along via the zle -F watcher; one last sysread drains any final
+# bytes the bridge wrote between the last wake and the bridge exiting.
+# The async layer has already closed the watcher fd and unregistered;
+# we just unlink the fifo path. Question mode does not go through async
+# — it streams synchronously from the widget.
 _zsh_ai_scratch_on_response() {
-    # Capture the streaming-renderer output (if any) for use in the
-    # select-state display.
-    _zsh_ai_scratch_rendered_response="${REPLY_RENDERED:-}"
+    if [[ -n "$_zsh_ai_scratch_thinking_fifo" ]]; then
+        rm -f "$_zsh_ai_scratch_thinking_fifo" 2>/dev/null
+        _zsh_ai_scratch_thinking_fifo=""
+    fi
+    _zsh_ai_scratch_thinking_fd=0
 
-    # Split <think>...</think> blocks off before candidate parsing.
-    # The thinking content is still captured (for the dim-fallback display
-    # path when no renderer is configured).
-    local split="$(_zsh_ai_scratch_split_thinking "$REPLY")"
-    local sep=$'\x1f'
-    local thinking="${split%%${sep}*}"
-    local clean="${split#*${sep}}"
-    _zsh_ai_scratch_thinking_content="$thinking"
-
-    if ! _zsh_ai_scratch_parse_candidates "$clean"; then
+    if ! _zsh_ai_scratch_parse_candidates "$REPLY"; then
         _zsh_ai_scratch_message="[no candidates · ^G: retry · esc: cancel]"
         zle reset-prompt 2>/dev/null
         return 0
@@ -540,50 +531,21 @@ _zsh_ai_scratch_autosuggest_enable() {
     _zsh_ai_scratch_autosuggest_was=""
 }
 
-# Path to the bundled streaming `<think>` filter (python3).
-_zsh_ai_scratch_filter_cmd() {
-    print -r -- "python3 -u ${_ZSH_AI_DIR}/lib/think-filter.py"
+# Choose the bridge's `--thinking` arg based on `show_thinking` config.
+# yes → inline (reasoning merged into the content stream with a blank-
+# line separator — no tags or prefixes; renderer treats it as prose).
+# no  → none (reasoning dropped at the bridge).
+_zsh_ai_scratch_thinking_arg() {
+    _zsh_ai_cfg_bool ':zsh-ai:scratch' show_thinking yes \
+        && print -r -- "inline" \
+        || print -r -- "none"
 }
 
-# Compose the pipeline for ASK / MODIFY mode. Output of this pipeline
-# goes into POSTDISPLAY (the thinking display above the candidate list).
-# POSTDISPLAY can't reliably handle embedded ANSI escapes — ZLE treats
-# them as characters for cursor math but the terminal sometimes mis-
-# renders them — so we DON'T pipe through a markdown renderer here.
-# Plain extracted text only; we render visual distinction in build_display
-# via region_highlight (dim) + `💭 ` line prefix.
-#
-#   show_thinking=yes: think-filter extract  (plain reasoning text)
-#   show_thinking=no : ""  (no tee, raw text collected for candidates only)
-_zsh_ai_scratch_pipeline_ask() {
-    _zsh_ai_cfg_bool ':zsh-ai:scratch' show_thinking yes || { print -r -- ""; return; }
-    print -r -- "$(_zsh_ai_scratch_filter_cmd) extract"
-}
-
-# Compose the pipeline for QUESTION mode. The stream goes through this
-# pipeline straight to the terminal. Returns "" only when neither
-# filter nor renderer is needed (passthrough + no formatter).
-#
-#   show_thinking=yes + formatter : $formatter         (raw + render)
-#   show_thinking=yes, no formatter: ""                (raw text streams)
-#   show_thinking=no  + formatter : strip | $formatter (clean answer rendered)
-#   show_thinking=no, no formatter: strip              (clean answer raw)
-_zsh_ai_scratch_pipeline_question() {
-    local show_yes=0
-    _zsh_ai_cfg_bool ':zsh-ai:scratch' show_thinking yes && show_yes=1
-    local renderer="$(_zsh_ai_scratch_resolve_renderer)"
-    [[ "$renderer" == "none" ]] && renderer=""
-    local parts=()
-    (( ! show_yes )) && parts+=("$(_zsh_ai_scratch_filter_cmd) strip")
-    [[ -n "$renderer" ]] && parts+=("$renderer")
-    print -r -- "${(j: | :)parts}"
-}
-
-# Question mode: streams synchronously from the widget. Pipes SSE-decoded
-# text chunks through the configured renderer (mdansi auto-detected for
-# live render, glow falls back to render-at-EOF, "none" passes raw text)
-# straight to the terminal, then accept-line back to a fresh prompt with
-# the pre-^Xq buffer restored.
+# Question mode: streams synchronously from the widget. Bridge handles
+# the thinking split natively (--thinking inline embeds <think>…</think>
+# in the stdout stream when show_thinking=yes, drops it when no). The
+# stream pipes through the configured renderer straight to the terminal,
+# then accept-line back to a fresh prompt with the pre-^Xq buffer restored.
 _zsh_ai_scratch_question_stream() {
     local instr="$_zsh_ai_scratch_instruction"
     local saved_buf="$_zsh_ai_scratch_saved_buffer"
@@ -615,17 +577,16 @@ _zsh_ai_scratch_question_stream() {
     print -P "%F{cyan}?%f %B${instr}%b"
     print ""
 
-    # Pipe through the question-mode pipeline (filter + optional renderer)
-    # straight to the terminal. With show_thinking=yes and a formatter,
-    # this is just `chat_stream | $formatter` (raw <think> tags ride
-    # along into the renderer). With show_thinking=no, prepend the
-    # think-filter strip stage so reasoning is dropped before render.
-    local pipeline="$(_zsh_ai_scratch_pipeline_question)"
-    if [[ -n "$pipeline" ]]; then
-        _zsh_ai_chat_stream "$model" "$sys" "$instr" "$max_tokens" "$temp" \
-            | eval "$pipeline"
+    local thinking="$(_zsh_ai_scratch_thinking_arg)"
+    local renderer="$(_zsh_ai_scratch_resolve_renderer)"
+    [[ "$renderer" == "none" ]] && renderer=""
+    if [[ -n "$renderer" ]]; then
+        _zsh_ai_chat "$model" "$sys" "$instr" "$max_tokens" "$temp" \
+            --thinking "$thinking" \
+            | eval "$renderer"
     else
-        _zsh_ai_chat_stream "$model" "$sys" "$instr" "$max_tokens" "$temp"
+        _zsh_ai_chat "$model" "$sys" "$instr" "$max_tokens" "$temp" \
+            --thinking "$thinking"
     fi
     print ""
 
@@ -646,7 +607,19 @@ _zsh_ai_scratch_reset_state() {
     _zsh_ai_scratch_message=""
     _zsh_ai_scratch_thinking_override=""
     _zsh_ai_scratch_thinking_content=""
-    _zsh_ai_scratch_rendered_response=""
+    # Belt-and-braces: if the async layer didn't close the fd (e.g.
+    # cancel path racing with reset), close it here and unlink the
+    # fifo path so we don't leak resources or filesystem entries.
+    if (( _zsh_ai_scratch_thinking_fd > 0 )); then
+        local _fd=$_zsh_ai_scratch_thinking_fd
+        zle -F -w $_fd 2>/dev/null
+        exec {_fd}<&- 2>/dev/null
+        _zsh_ai_scratch_thinking_fd=0
+    fi
+    if [[ -n "$_zsh_ai_scratch_thinking_fifo" ]]; then
+        rm -f "$_zsh_ai_scratch_thinking_fifo" 2>/dev/null
+        _zsh_ai_scratch_thinking_fifo=""
+    fi
 }
 
 # ── Widgets ─────────────────────────────────────────────────────────────────
@@ -982,96 +955,20 @@ zsh-ai-reset() {
     print -- "zsh-ai: state reset"
 }
 
-# Emit a copy-paste-able curl command for the LLM request the plugin
-# would make for a given mode + query. Useful for debugging models,
-# server quirks, or scripting headlessly with the plugin's prompts.
-#
-# Usage:
-#   zsh-ai-curl [--stream] <mode> <query> [target-for-modify]
-#
-# Modes: ask, modify, question.
-#
-# Without --stream (default): emits `"stream":false`. The server replies
-# with a single JSON blob — pipe through `jq -r .choices[0].message.content`
-# to see the answer. Easier for one-off debugging.
-#
-# With --stream: emits `"stream":true`. The server replies with SSE
-# `data: {...}` chunks — matches what the scratchpad's runtime sends.
-# Pipe to a streaming SSE parser to extract content.
-#
-# Honors zstyle config: model, system prompts (per-mode), endpoint,
-# api_key / api_key_env, max_tokens, temperature, enable_thinking
-# (with per-mode overrides).
-zsh-ai-curl() {
-    local stream_flag=false
-    if [[ "$1" == "--stream" ]]; then
-        stream_flag=true
-        shift
-    fi
-    local mode="$1" query="$2" target="${3:-}"
-    if [[ -z "$mode" || -z "$query" || ( "$mode" == "modify" && -z "$target" ) ]]; then
-        print -ru2 -- "Usage: zsh-ai-curl [--stream] <ask|modify|question> <query> [target-for-modify]"
-        return 2
-    fi
-    case "$mode" in
-        ask|modify|question) ;;
-        *) print -ru2 -- "zsh-ai-curl: unknown mode '$mode' (ask|modify|question)"; return 2 ;;
-    esac
-
-    local _zsh_ai_ctx=':zsh-ai:scratch'
-    local model="$(_zsh_ai_cfg ':zsh-ai:scratch' model '')"
-    if [[ -z "$model" ]]; then
-        print -ru2 -- "zsh-ai-curl: no model configured (zstyle ':zsh-ai:scratch' model …)"
-        return 1
-    fi
-    local max_tokens="$(_zsh_ai_cfg ':zsh-ai:scratch' max_tokens 200)"
-    local temp="$(_zsh_ai_cfg ':zsh-ai:scratch' temperature 0.2)"
-    local endpoint="$(_zsh_ai_resolve endpoint 'http://localhost:11434/v1')"
-    local url="${endpoint%/}/chat/completions"
-
-    local sys user_msg
-    _zsh_ai_scratch_build_prompts "$mode" "$query" "$target"
-
-    # Per-mode thinking override via the same resolver the runtime uses.
-    local _zsh_ai_thinking_key="enable_thinking_${mode}"
-    local thinking="$(_zsh_ai_resolve_thinking)"
-
-    local body
-    body="$(_zsh_ai_chat_body "$model" "$sys" "$user_msg" "$max_tokens" "$temp" "$thinking" "$stream_flag")"
-
-    # API key — resolve through the same env-var indirection.
-    local api_key="" api_key_env
-    api_key_env="$(_zsh_ai_resolve api_key_env '')"
-    if [[ -n "$api_key_env" ]]; then
-        api_key="${(P)api_key_env}"
-    else
-        api_key="$(_zsh_ai_resolve api_key '')"
-    fi
-
-    # Emit a shell-quoted curl command. ${(qqq)var} wraps in double quotes
-    # with proper escaping — safe to paste anywhere. --no-buffer added
-    # when streaming so chunks flush immediately.
-    local cmd="curl -sS"
-    [[ "$stream_flag" == "true" ]] && cmd+=" --no-buffer -N"
-    cmd+=" -H 'Content-Type: application/json'"
-    [[ -n "$api_key" ]] && cmd+=" -H ${(qqq):-"Authorization: Bearer $api_key"}"
-    cmd+=" --data-binary ${(qqq)body} ${(qqq)url}"
-    print -r -- "$cmd"
-}
-
-# Run the full plugin pipeline (curl + SSE decode + optional renderer)
-# headlessly. Useful for scripting and for diagnosing streaming-render
-# issues outside the ZLE machinery.
+# Run the full plugin pipeline (bridge + optional renderer) headlessly.
+# Useful for scripting and for diagnosing streaming-render issues outside
+# the ZLE machinery.
 #
 # Usage:
 #   zsh-ai-run [--no-render] <mode> <query> [target-for-modify]
 #
 # Default: pipes through the configured `formatter` (mdansi --stream by
-# default if installed). With --no-render: emits plain text chunks (the
-# SSE-decoded stream as the runtime sees it, before any renderer).
+# default if installed). With --no-render: emits raw text from the
+# bridge (with <think>…</think> inlined when show_thinking=yes; dropped
+# when no).
 #
-# Honours every relevant zstyle (same as zsh-ai-curl). Synchronous: blocks
-# until the model finishes or you ^C.
+# For one-off debugging of the underlying request, call
+# `bin/zsh-ai-llm chat --user …` directly.
 zsh-ai-run() {
     local render=1
     if [[ "$1" == "--no-render" ]]; then
@@ -1101,20 +998,20 @@ zsh-ai-run() {
     _zsh_ai_scratch_build_prompts "$mode" "$query" "$target"
 
     local _zsh_ai_thinking_key="enable_thinking_${mode}"
+    local thinking="$(_zsh_ai_scratch_thinking_arg)"
 
-    # CLI usage: emit the full LLM output through the question-mode
-    # pipeline (filter strip when show_thinking=no, optional renderer).
-    # Ask/modify mode's extract-thinking-only pipeline is in-app UX —
-    # not what a CLI consumer wants.
     if (( render )); then
-        local pipeline="$(_zsh_ai_scratch_pipeline_question)"
-        if [[ -n "$pipeline" ]]; then
-            _zsh_ai_chat_stream "$model" "$sys" "$user_msg" "$max_tokens" "$temp" \
-                | eval "$pipeline"
+        local renderer="$(_zsh_ai_scratch_resolve_renderer)"
+        [[ "$renderer" == "none" ]] && renderer=""
+        if [[ -n "$renderer" ]]; then
+            _zsh_ai_chat "$model" "$sys" "$user_msg" "$max_tokens" "$temp" \
+                --thinking "$thinking" \
+                | eval "$renderer"
             return $?
         fi
     fi
-    _zsh_ai_chat_stream "$model" "$sys" "$user_msg" "$max_tokens" "$temp"
+    _zsh_ai_chat "$model" "$sys" "$user_msg" "$max_tokens" "$temp" \
+        --thinking "$thinking"
 }
 
 # ── Registration ────────────────────────────────────────────────────────────
@@ -1134,6 +1031,9 @@ _zsh_ai_scratch_register() {
     zle -N _zsh_ai_scratch_down
     zle -N _zsh_ai_scratch_up
     zle -N _zsh_ai_scratch_thinking_toggle
+    # Push-based thinking-pipe reader. zle -F dispatches to a *widget*,
+    # so this needs the same zle -N treatment as any other handler.
+    zle -N _zsh_ai_scratch_thinking_on_read
     zle -N _zsh_ai_scratch_g_action
     zle -N _zsh_ai_scratch_edit_instruction
     zle -N _zsh_ai_scratch_accept

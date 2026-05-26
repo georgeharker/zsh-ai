@@ -1,0 +1,23 @@
+[project]
+name = "zsh-ai"
+version = "0.1.0"
+description = "OpenAI-compatible LLM integration for zsh — Python bridge"
+requires-python = ">=3.9"
+dependencies = [
+    "openai>=1.0",
+]
+
+# `uv sync` installs this package (editable) into .venv/ along with
+# openai. We do NOT declare a [project.scripts] entry — the auto-
+# generated console-script wrapper carries Windows-launcher cruft we
+# don't want in our invocation path. The plugin invokes the bridge via
+# `bin/zsh-ai-llm`, a hand-written shim that execs
+# `.venv/bin/python -m zsh_ai`.
+
+[build-system]
+requires = ["uv_build>=0.5"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = "src"
+module-name = "zsh_ai"

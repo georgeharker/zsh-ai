@@ -20,12 +20,22 @@ Requirements
 ------------
 
 - `zsh` 5.x+
-- `curl`
-- `jq` recommended for JSON parsing; `python3` works as a fallback
-- `glow` optional — used by `^Xq` to render markdown answers (auto-detected)
+- `python` 3.9+ and [`uv`](https://docs.astral.sh/uv/) (for the LLM bridge)
+- `glow`, `mdansi`, or `mdcat` optional — used by `^Xq` to render
+  markdown answers (auto-detected)
 
 Install
 -------
+
+```zsh
+# In the plugin directory, once, to set up the Python bridge:
+cd /path/to/zsh-ai && uv sync
+```
+
+`uv sync` creates `.venv/` with the openai SDK and installs the bridge
+entry-point as `.venv/bin/zsh-ai-llm`, which `bin/zsh-ai-llm` symlinks
+into the repo. The plugin invokes `bin/zsh-ai-llm` directly — no
+PYTHONPATH dance, no venv activation.
 
 ```zsh
 # ~/.zshrc
@@ -126,40 +136,28 @@ zstyle ':zsh-ai:scratch' formatter           'mdansi --stream'   # auto-detected
 
 Internally there are TWO sources of "thinking" from the server: the
 literal `<think>…</think>` tags inline in `delta.content`, and the
-separate `delta.reasoning_content` API field. The HTTP layer's SSE parser
-normalises the second into the first (synthetic `<think>…</think>` is
-emitted around `reasoning_content` chunks). All downstream code then
-sees one unified format.
+separate `delta.reasoning_content` API field. The bridge
+(`bin/zsh-ai-llm`) unifies both: it routes the answer stream to one
+sink (`--content`) and the reasoning stream to another (`--thinking`),
+with explicit per-call routing. The shell side never has to filter or
+parse `<think>` tags.
 
-**Filtering / extraction** is done by `lib/think-filter.py`, a small
-streaming Python script with three modes:
+For each scratchpad mode:
 
-- `strip`       — drop `<think>…</think>` blocks (tags + inner text)
-- `extract`     — emit ONLY the inner text of think blocks
-- `passthrough` — verbatim
-
-The pipelines wired up automatically per mode:
-
-| Mode + show_thinking            | Pipeline                                                                    |
-|--------------------------------|-----------------------------------------------------------------------------|
-| ask/modify, show=yes            | tee: raw → outfile (candidates) **+** `extract` → POSTDISPLAY thinking area |
-| ask/modify, show=no             | raw → outfile (no tee, no thinking shown)                                   |
-| question, show=yes + renderer   | `formatter` (raw `<think>` rides into renderer)                             |
-| question, show=no + renderer    | `strip \| formatter` (final-answer only, rendered)                          |
-| question, show=yes, no renderer | raw stream                                                                  |
-| question, show=no, no renderer  | `strip` (final-answer only, raw)                                            |
+| Mode + show_thinking             | Bridge invocation                                              |
+|----------------------------------|----------------------------------------------------------------|
+| ask/modify, show=yes             | `--content - --thinking <tempfile>` (file polled by progress)  |
+| ask/modify, show=no              | `--content - --thinking none` (reasoning dropped at the bridge)|
+| question, show=yes               | `--content - --thinking inline` (wrapped `<think>` in stdout)  |
+| question, show=no                | `--content - --thinking none`                                  |
 
 **Why no renderer in the ask path?** POSTDISPLAY can't reliably embed
 ANSI escape codes — ZLE counts them as characters for cursor math and
 some terminals mis-render the result. So ask-mode thinking is displayed
-as plain extracted text, line-prefixed with `💭 ` and dimmed via
-`region_highlight`. Tail-N truncation (`thinking_max_lines`, default 20)
-keeps it readable when the model is verbose; older reasoning scrolls off
-the top as new tokens arrive.
-
-Candidate parsing always strips `<think>` from the captured raw text
-post-stream (irrespective of `show_thinking`) — reasoning would otherwise
-be parsed as bogus commands.
+as plain text from the bridge's thinking file, line-prefixed with `💭 `
+and dimmed via `region_highlight`. Tail-N truncation
+(`thinking_max_lines`, default 20) keeps it readable when the model is
+verbose; older reasoning scrolls off the top as new tokens arrive.
 
 ### Formatter (markdown renderer)
 
@@ -280,26 +278,37 @@ zsh-ai -h | help           usage
 For shell-scripting use. Same backend, no widgets, no scratchpad. Reads
 `:zsh-ai:scratch` model and endpoint.
 
-### `zsh-ai-curl` — emit the request as a curl command
+### `zsh-ai-run` — run a plugin-built prompt headlessly
 
-For debugging models / servers, or scripting outside the plugin, emit a
-copy-paste-able curl command that matches what the plugin would send:
+For scripting and for diagnosing rendering issues outside the ZLE
+machinery:
 
 ```zsh
-zsh-ai-curl ask      "list files modified today"
-zsh-ai-curl modify   "exclude tests dirs" "find . -name '*.py'"
-zsh-ai-curl question "why is ldd broken on macOS"
+zsh-ai-run             ask      "list files modified today"
+zsh-ai-run --no-render question "why is ldd broken on macOS"
+zsh-ai-run             modify   "exclude tests dirs" "find . -name '*.py'"
 ```
 
-Honours every relevant zstyle (`model`, `system_prompt` /
-`modify_system_prompt` / `question_system_prompt`, `endpoint`,
-`api_key` / `api_key_env`, `enable_thinking` + per-mode overrides,
-`max_tokens`, `temperature`). The emitted command is fully shell-quoted
-and ready to pipe to `bash`, `xclip`, or wherever.
+With the formatter on, output is piped through whatever `formatter`
+zstyle resolves to (mdansi, glow, mdcat, …). With `--no-render`, the
+raw bridge stream is emitted (with `<think>…</think>` inlined when
+`show_thinking=yes`).
+
+For one-off debugging of the underlying HTTP request, call the bridge
+directly:
+
+```zsh
+./bin/zsh-ai-llm chat --model qwen3 --user 'hi' --thinking inline
+```
 
 Architecture notes
 ------------------
 
+- **Python bridge**: `bin/zsh-ai-llm` (Python + openai SDK) is the only
+  thing that speaks HTTP. The zsh side spawns it as a subprocess and
+  reads its stdout / a designated thinking-output file. Source in
+  `src/zsh_ai/` (`cli.py`, `chat.py`, `complete.py`, `stream.py`,
+  `sinks.py`, `client.py`).
 - **Async**: a backgrounded subshell runs the LLM call; a heartbeat
   process writes a fifo byte every 100ms. ZLE wakes via `zle -F` on the
   fifo, polls for a sentinel file. No coproc (avoids conflicts with
