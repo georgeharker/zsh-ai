@@ -1,16 +1,17 @@
 #!/usr/bin/env zsh
 # lib/http.zsh — curl-based OpenAI-compatible HTTP client.
 #
-# Two entry points:
-#   _zsh_ai_chat        POST /v1/chat/completions  (used by ? and ??)
-#   _zsh_ai_completion  POST /v1/completions       (used by autosuggest;
-#                                                    supports `suffix` for FIM
-#                                                    on servers that honor it,
-#                                                    notably llama.cpp)
+# Three entry points:
+#   _zsh_ai_chat         POST /v1/chat/completions, full response in REPLY
+#                        (used by scratchpad ask / modify / question)
+#   _zsh_ai_chat_stream  POST /v1/chat/completions with stream:true; pipes
+#                        the assistant's text chunks to stdout as SSE deltas
+#                        arrive (used by question mode when streaming opted in)
+#   _zsh_ai_completion   POST /v1/completions; supports `suffix` for FIM on
+#                        servers that honour it, notably llama.cpp (used by FIM)
 #
-# Both return the assistant text on stdout, or empty on failure.
-# Errors are silent by default to keep the autosuggest path quiet — set
-# ZSH_AI_DEBUG=1 to surface curl/jq stderr.
+# All return assistant text on stdout, empty on failure. Errors are silent
+# by default — set ZSH_AI_DEBUG=1 to surface curl/jq stderr.
 #
 # Requires: curl. Strongly prefers jq for JSON parsing; falls back to python3.
 
@@ -289,37 +290,15 @@ _zsh_ai_post_stream() {
     fi
 }
 
-# Read SSE stream from stdin, extract content deltas, print to stdout.
-# Stops at `data: [DONE]`. Falls back to python3 if jq isn't installed.
-#
-# Pipes jq/python3 output DIRECTLY to stdout — going through a $(...)
-# command substitution would strip trailing newlines from chunks, which
-# matters when a delta IS a newline (very common between markdown blocks).
+# Read SSE stream from stdin, extract content / reasoning_content deltas,
+# emit as plain text on stdout (with synthetic `<think>…</think>` wrap
+# around reasoning_content runs so downstream filtering treats the two
+# server conventions uniformly). Implemented as a small python script
+# (lib/sse-parse.py) because shell $(…) substitution strips trailing
+# newlines — a real correctness issue when chunk boundaries land on a
+# newline character.
 _zsh_ai_parse_sse_chunks() {
-    local line payload
-    local jq_avail=0 py_avail=0
-    (( $+commands[jq] ))      && jq_avail=1
-    (( $+commands[python3] )) && py_avail=1
-
-    while IFS= read -r line; do
-        [[ "$line" == data:* ]] || continue
-        payload="${line#data:}"
-        payload="${payload# }"
-        [[ "$payload" == "[DONE]" ]] && break
-        [[ -z "$payload" ]] && continue
-        if (( jq_avail )); then
-            printf '%s' "$payload" | jq -j '.choices[0].delta.content // empty' 2>/dev/null
-        elif (( py_avail )); then
-            printf '%s' "$payload" | python3 -c '
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    sys.stdout.write(d["choices"][0]["delta"].get("content", ""))
-except Exception:
-    pass
-' 2>/dev/null
-        fi
-    done
+    python3 -u "${_ZSH_AI_DIR}/lib/sse-parse.py"
 }
 
 # Public: text completion (with optional suffix for FIM).

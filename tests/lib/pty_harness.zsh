@@ -57,9 +57,6 @@ zstyle ':zsh-ai:scratch' enabled yes
 zstyle ':zsh-ai:scratch' model 'test-model'
 zstyle ':zsh-ai:scratch' keybind '^Xa'
 zstyle ':zsh-ai:fim' enabled no
-zstyle ':zsh-ai:autosuggest' enabled no
-zstyle ':zsh-ai:qa' prefix_widget no
-zstyle ':zsh-ai:qa' keybind_widget no
 
 # Test injection hook — set TEST_PRE_SOURCE in parent env to inject zsh
 # code that runs BEFORE the plugin is sourced (e.g. extra zstyle, mocks
@@ -69,14 +66,17 @@ ${TEST_PRE_SOURCE:-}
 source "$PTY_PLUGIN_PATH"
 
 # Default mocks. Tests pass the mock response via a FILE path (env var
-# _TEST_LLM_RESPONSE_FILE) — not via env content. This avoids zpty's argv
+# _TEST_AI_RESPONSE_FILE) — not via env content. This avoids zpty's argv
 # re-eval mangling multi-line strings (newlines in env values get parsed
 # as shell commands).
 _zsh_ai_chat() {
-    [[ -f "\${_TEST_LLM_RESPONSE_FILE:-}" ]] && cat "\$_TEST_LLM_RESPONSE_FILE"
+    [[ -f "\${_TEST_AI_RESPONSE_FILE:-}" ]] && cat "\$_TEST_AI_RESPONSE_FILE"
+}
+_zsh_ai_chat_stream() {
+    [[ -f "\${_TEST_AI_RESPONSE_FILE:-}" ]] && cat "\$_TEST_AI_RESPONSE_FILE"
 }
 _zsh_ai_completion() {
-    [[ -f "\${_TEST_LLM_RESPONSE_FILE:-}" ]] && cat "\$_TEST_LLM_RESPONSE_FILE"
+    [[ -f "\${_TEST_AI_RESPONSE_FILE:-}" ]] && cat "\$_TEST_AI_RESPONSE_FILE"
 }
 
 ${TEST_POST_SOURCE:-}
@@ -90,7 +90,7 @@ function _pty_inspect() {
     # Sentinel substitution for newlines so the line-based parser on the
     # other end can reassemble multi-line values. Choose a string unlikely
     # to appear in any real PREDISPLAY/POSTDISPLAY/BUFFER content.
-    local NL_SUB='__ZSHLLM_NL__'
+    local NL_SUB='__ZSHAI_NL__'
     local _pre="\${PREDISPLAY//\$'\n'/\$NL_SUB}"
     local _post="\${POSTDISPLAY//\$'\n'/\$NL_SUB}"
     local _buf="\${BUFFER//\$'\n'/\$NL_SUB}"
@@ -122,8 +122,9 @@ function _pty_inspect() {
     zle -M ""
 }
 zle -N _pty_inspect
-# Bind in EVERY keymap so the inspector works mid-scratchpad (scratchpad
-# switches to its own keymaps that wouldn't otherwise have ^Y).
+# Bind in EVERY keymap so the inspector works mid-scratchpad — that
+# session runs in the zsh-ai-scratch keymap, which inherits from main
+# but tests may want to query state without first leaving the keymap.
 for km in \$(bindkey -l); do
     bindkey -M "\$km" '^Y' _pty_inspect 2>/dev/null
 done
@@ -174,7 +175,7 @@ pty_spawn() {
         USER="${USER:-test}" \
         LC_ALL="${LC_ALL:-en_US.UTF-8}" \
         LANG="${LANG:-en_US.UTF-8}" \
-        _TEST_LLM_RESPONSE_FILE="${TEST_LLM_RESPONSE_FILE:-}" \
+        _TEST_AI_RESPONSE_FILE="${TEST_AI_RESPONSE_FILE:-}" \
         zsh --no-globalrcs -i
 
     local marker=${_pty_markers[$name]}
@@ -214,8 +215,8 @@ pty_inspect() {
     block="${block%%${mk}END*}"
 
     # Parse each line. Format: ${mk}KEY=value (newlines inside value were
-    # replaced with __ZSHLLM_NL__ by the inspector; restore here).
-    local NL_SUB='__ZSHLLM_NL__'
+    # replaced with __ZSHAI_NL__ by the inspector; restore here).
+    local NL_SUB='__ZSHAI_NL__'
     local LF=$'\n'
     local line key val
     while IFS= read -r line; do

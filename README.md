@@ -115,55 +115,68 @@ Current state is shown in the instruction-line hint:
 ```
 After the call fires, the override resets to `auto`.
 
-**Display of `<think>…</think>` blocks** — independent of whether the
-model produces them:
+**Display of the model's running output** — controlled by `show_thinking`
+(default `yes`):
 
 ```zsh
-zstyle ':zsh-ai:scratch' show_thinking       yes   # default: no
-zstyle ':zsh-ai:scratch' thinking_max_lines  6     # cap in ask/modify UI
+zstyle ':zsh-ai:scratch' show_thinking       yes   # default: yes
+zstyle ':zsh-ai:scratch' thinking_max_lines  0     # 0 = unlimited (default)
+zstyle ':zsh-ai:scratch' formatter           'mdansi --stream'   # auto-detected
 ```
 
-In **ask / modify** mode: `<think>` is stripped from the candidate parser
-(prevents reasoning text from being treated as commands), and if
-`show_thinking=yes` the captured reasoning is rendered dimmed above the
-candidate list, each line prefixed with 💭.
+Internally there are TWO sources of "thinking" from the server: the
+literal `<think>…</think>` tags inline in `delta.content`, and the
+separate `delta.reasoning_content` API field. The HTTP layer's SSE parser
+normalises the second into the first (synthetic `<think>…</think>` is
+emitted around `reasoning_content` chunks). All downstream code then
+sees one unified format.
 
-In **question** mode: `<think>` blocks become markdown blockquotes
-prefixed with `> 💭 *thinking…*` so glow renders them as a distinct
-section. With `show_thinking=no` (default), they're stripped.
+**Filtering / extraction** is done by `lib/think-filter.py`, a small
+streaming Python script with three modes:
 
-### Question mode — streaming and formatter
+- `strip`       — drop `<think>…</think>` blocks (tags + inner text)
+- `extract`     — emit ONLY the inner text of think blocks
+- `passthrough` — verbatim
 
-The freeform answer of `^Xq` is rendered through a formatter (default
-`glow`, auto-detected). Configurable:
+The pipelines wired up automatically per mode:
+
+| Mode + show_thinking            | Pipeline                                                                    |
+|--------------------------------|-----------------------------------------------------------------------------|
+| ask/modify, show=yes            | tee: raw → outfile (candidates) **+** `extract` → POSTDISPLAY thinking area |
+| ask/modify, show=no             | raw → outfile (no tee, no thinking shown)                                   |
+| question, show=yes + renderer   | `formatter` (raw `<think>` rides into renderer)                             |
+| question, show=no + renderer    | `strip \| formatter` (final-answer only, rendered)                          |
+| question, show=yes, no renderer | raw stream                                                                  |
+| question, show=no, no renderer  | `strip` (final-answer only, raw)                                            |
+
+**Why no renderer in the ask path?** POSTDISPLAY can't reliably embed
+ANSI escape codes — ZLE counts them as characters for cursor math and
+some terminals mis-render the result. So ask-mode thinking is displayed
+as plain extracted text, line-prefixed with `💭 ` and dimmed via
+`region_highlight`. Tail-N truncation (`thinking_max_lines`, default 20)
+keeps it readable when the model is verbose; older reasoning scrolls off
+the top as new tokens arrive.
+
+Candidate parsing always strips `<think>` from the captured raw text
+post-stream (irrespective of `show_thinking`) — reasoning would otherwise
+be parsed as bogus commands.
+
+### Formatter (markdown renderer)
+
+One zstyle controls the renderer for all modes:
 
 ```zsh
-zstyle ':zsh-ai:scratch' formatter 'glow -'    # default if glow installed
-zstyle ':zsh-ai:scratch' formatter 'mdcat'     # alternate renderer
-zstyle ':zsh-ai:scratch' formatter 'none'      # no rendering — raw output
+zstyle ':zsh-ai:scratch' formatter 'mdansi --stream'  # default if mdansi installed
+zstyle ':zsh-ai:scratch' formatter 'glow -'           # fallback if glow installed
+zstyle ':zsh-ai:scratch' formatter 'mdcat'            # alternative
+zstyle ':zsh-ai:scratch' formatter 'none'             # no rendering, raw output
 ```
 
-The formatter is a shell command; we pipe answer text into it.
-
-**Streaming**: opt in to stream the answer as it generates:
-
-```zsh
-zstyle ':zsh-ai:scratch' stream_question     yes   # default: no
-zstyle ':zsh-ai:scratch' stream_post_render  yes   # default: yes
-```
-
-Two behaviors depending on whether a formatter is active:
-
-| stream_question | formatter      | what you see                       |
-|-----------------|----------------|------------------------------------|
-| no              | glow / other   | wait for full response → rendered  |
-| no              | none           | wait for full response → raw       |
-| yes             | glow / other   | spinner during call → rendered     |
-| yes             | none           | raw text streams as it generates   |
-
-(Raw markdown source is hidden when a formatter is configured — there's
-no point seeing it twice. Set `stream_post_render no` to opt out and
-see only the live stream, no final render.)
+Auto-detection order if unset: `mdansi → glow → none`. Streaming-aware
+renderers (mdansi) give live incremental rendering; non-streaming
+renderers (glow, mdcat) buffer the whole document and render at EOF.
+The pipeline shape is identical either way — only the visible behavior
+differs.
 
 ### FIM (`^Xi`)
 
@@ -241,11 +254,11 @@ ldd is glibc-specific. On macOS, use `otool -L` or `dyld_info` instead.
 For libraries inside an app bundle: `otool -L MyApp.app/Contents/MacOS/MyApp`.
 ```
 
-With `stream_question=yes`, the answer streams as it's generated. When a
-formatter is also configured, the raw stream is hidden behind a spinner
-(`⠋ generating…`) and only the rendered output is shown; otherwise raw
-text streams to the terminal as it arrives. See the
-*Question mode — streaming and formatter* config section below.
+The stream is piped straight through the configured `formatter`. With
+`mdansi --stream` (default if installed), rendered ANSI appears live as
+the model generates. With `glow -`, the renderer buffers until EOF and
+dumps the rendered output all at once. With `formatter none`, raw
+markdown text streams to the terminal.
 
 Whatever BUFFER held before `^Xq` is pushed back to the next prompt
 (via `print -z`) so your in-progress work isn't lost.
@@ -266,6 +279,23 @@ zsh-ai -h | help           usage
 
 For shell-scripting use. Same backend, no widgets, no scratchpad. Reads
 `:zsh-ai:scratch` model and endpoint.
+
+### `zsh-ai-curl` — emit the request as a curl command
+
+For debugging models / servers, or scripting outside the plugin, emit a
+copy-paste-able curl command that matches what the plugin would send:
+
+```zsh
+zsh-ai-curl ask      "list files modified today"
+zsh-ai-curl modify   "exclude tests dirs" "find . -name '*.py'"
+zsh-ai-curl question "why is ldd broken on macOS"
+```
+
+Honours every relevant zstyle (`model`, `system_prompt` /
+`modify_system_prompt` / `question_system_prompt`, `endpoint`,
+`api_key` / `api_key_env`, `enable_thinking` + per-mode overrides,
+`max_tokens`, `temperature`). The emitted command is fully shell-quoted
+and ready to pipe to `bash`, `xclip`, or wherever.
 
 Architecture notes
 ------------------

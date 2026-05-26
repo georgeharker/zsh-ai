@@ -2,24 +2,19 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # zsh-ai — OpenAI-compatible LLM integration for zsh.
 #
-# Four independent capabilities, each opt-in via zstyle:
+# Four keybind-driven widgets, all sharing one async backbone:
 #
-#   1. Q&A from the prompt (`:` / `::` prefix, or keybind):
-#        : how do I find files modified in the last 24h
-#        :: now exclude hidden files
+#   ^Xa  ask      — multi-line scratchpad → N candidate commands → accept
+#   ^Xm  modify   — rewrite current BUFFER per an instruction → accept
+#   ^Xq  question — freeform Q&A; answer rendered below the prompt
+#   ^Xi  FIM      — fill-in-the-middle completion at cursor
 #
-#   2. Scratchpad (default ^Xa) — multi-line LLM ask, candidate selection,
-#      accept replaces BUFFER with chosen command.
+# Backend: any OpenAI-compatible HTTP endpoint (llama.cpp's `--server`,
+# ollama, LM Studio, vLLM, OpenRouter, …). Running the model is out of
+# scope — this plugin only talks to one you've already brought up.
 #
-#   3. FIM (default ^Xi) — fill-in-the-middle completion at cursor.
-#
-#   4. Modify (default ^Xm) — take what's in BUFFER, ask for a rewrite.
-#
-# Backend: any OpenAI-compatible HTTP endpoint
-# (llama.cpp's `--server`, ollama, LM Studio, vLLM, OpenRouter, etc.).
-# Starting/running the model is out of scope.
-#
-# Config: zstyle (see lib/config.zsh for the full namespace map).
+# Config: zstyle. See README for the full reference, or lib/config.zsh
+# for the namespace map.
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Resolve our own directory so library sourcing is location-independent.
@@ -66,8 +61,6 @@ EOF
 
 # ── Widget registration (interactive shells only) ───────────────────────────
 if [[ -o interactive ]]; then
-    _zsh_ai_async_register
-
     if _zsh_ai_cfg_bool ':zsh-ai:scratch' enabled yes; then
         _zsh_ai_scratch_register
     fi

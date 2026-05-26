@@ -86,9 +86,9 @@ _zsh_ai_fim_clean_response() {
     print -r -- "$txt"
 }
 
-# Pending state across the async boundary. LBUFFER could in principle change
-# between submit and completion — the flight keymap blocks input though, so
-# this is the value we want to splice into.
+# Pending state across the async boundary. We snapshot LBUFFER at submit
+# and splice the completion onto THAT value, not whatever LBUFFER might
+# be when the response arrives.
 typeset -g _zsh_ai_fim_pending_lbuf=""
 
 _zsh_ai_fim_insert() {
@@ -150,7 +150,7 @@ _zsh_ai_fim_register() {
 #
 # Basic:
 #   zstyle ':zsh-ai:fim' enabled     yes
-#   zstyle ':zsh-ai:fim' model       'qwen2.5-coder:1.5b'   # falls back to autosuggest model
+#   zstyle ':zsh-ai:fim' model       'qwen2.5-coder:1.5b'
 #   zstyle ':zsh-ai:fim' max_tokens  60
 #   zstyle ':zsh-ai:fim' temperature 0.1
 #   zstyle ':zsh-ai:fim' keybind     '^Xi'

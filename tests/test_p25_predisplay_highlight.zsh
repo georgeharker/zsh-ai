@@ -4,11 +4,11 @@
 
 source "${0:A:h}/lib/pty_harness.zsh"
 
-TEST_LLM_RESPONSE_FILE=$(mktemp -t zsh-ai-test-resp.XXXXXX)
+TEST_AI_RESPONSE_FILE=$(mktemp -t zsh-ai-test-resp.XXXXXX)
 {
     print -r -- "find ."
     print -r -- "ls -la"
-} > "$TEST_LLM_RESPONSE_FILE"
+} > "$TEST_AI_RESPONSE_FILE"
 
 TEST_POST_SOURCE='
 _zsh_ai_async_run() {
@@ -21,7 +21,7 @@ _zsh_ai_async_run() {
 _zsh_ai_async_running() { return 1; }
 '
 
-trap "rm -f $TEST_LLM_RESPONSE_FILE; pty_cleanup_all" EXIT
+trap "rm -f $TEST_AI_RESPONSE_FILE; pty_cleanup_all" EXIT
 
 pty_spawn shellA || pty_fail "spawn"
 
