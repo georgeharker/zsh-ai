@@ -345,6 +345,8 @@ export ZSH_AI_DEBUG_LOG=/tmp/zsh-ai.log
 tail -f /tmp/zsh-ai.log
 ```
 
+Credit to Geoff Miller for the idea.
+
 License
 -------
 
