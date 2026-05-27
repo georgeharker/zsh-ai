@@ -58,6 +58,34 @@ Configuration
 All configuration is via `zstyle`. Set values **before** sourcing the
 plugin — keybinds and widget setup read zstyle at source time.
 
+### TL;DR
+
+Everything below is optional except `model`. This is the whole minimal
+setup — drop it in `.zshrc` before sourcing the plugin:
+
+```zsh
+# Endpoint + auth, shared by every feature (the `*` matches all contexts).
+zstyle ':zsh-ai:*' endpoint    'http://localhost:11434/v1'  # OpenAI-compatible base URL (ollama default)
+zstyle ':zsh-ai:*' api_key_env 'OPENAI_API_KEY'             # NAME of the env var holding the key (empty/omit for local servers)
+
+# The one thing with no default — set a model or the plugin prompts you for one.
+zstyle ':zsh-ai:scratch' model 'qwen2.5-coder:7b-instruct'  # ^Xa ask · ^Xm modify · ^Xq question
+zstyle ':zsh-ai:fim'     model 'qwen2.5-coder:1.5b'         # ^Xi fill-in-the-middle (small fast model is fine)
+
+# Optional: theme the markdown viewer + renderer (any Textual theme name).
+zstyle ':zsh-ai:view' theme tokyo-night
+
+source /path/to/zsh-ai/zsh-ai.plugin.zsh
+```
+
+Two things to know going in: per-feature contexts (`:zsh-ai:scratch`,
+`:zsh-ai:fim`) override the shared `:zsh-ai:*`, so you can point FIM at a
+small local model while ask/question hit a bigger one; and a reasoning
+model (Qwen3, deepseek-r1) wants `max_tokens` headroom plus the
+`enable_thinking` / `show_thinking` knobs — see the sections below. If a
+chat-trained code model needs FIM tokens (Qwen-Coder, CodeLlama, …), add
+the `template_*` trio from the [FIM](#fim-xi) section.
+
 ### Shared
 
 ```zsh
