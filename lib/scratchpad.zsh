@@ -298,13 +298,14 @@ _zsh_ai_scratch_kick_off() {
     # opening viewer_fifo for write).
     if (( show_thinking && got_streaming )); then
         zle -I
-        local -a viewer_args
+        local -a viewer_args theme_cmd
         _zsh_ai_scratch_viewer_args viewer_args
+        _zsh_ai_view_theme_cmd theme_cmd
         # Explicit /dev/tty redirects: ZLE's stdin/stdout may be in a
         # state textual can't probe correctly. Forcing the tty
         # ensures textual sees a real terminal and can take over
         # input/output cleanly.
-        "$viewer" "$viewer_fifo" \
+        "${theme_cmd[@]}" "$viewer" "$viewer_fifo" \
             "${viewer_args[@]}" \
             --title "thinking" --subtitle "$_zsh_ai_scratch_mode" \
             </dev/tty >/dev/tty
@@ -641,9 +642,10 @@ _zsh_ai_scratch_relaunch_thinking() {
         return 0
     fi
     zle -I
-    local -a viewer_args
+    local -a viewer_args theme_cmd
     _zsh_ai_scratch_viewer_args viewer_args
-    "${ZSH_AI_MDVIEW_BIN:-$_ZSH_AI_DIR/bin/mdview}" "$_zsh_ai_scratch_thinking_log" \
+    _zsh_ai_view_theme_cmd theme_cmd
+    "${theme_cmd[@]}" "${ZSH_AI_MDVIEW_BIN:-$_ZSH_AI_DIR/bin/mdview}" "$_zsh_ai_scratch_thinking_log" \
         "${viewer_args[@]}" \
         --title "thinking (recall)" --no-exit-on-eof \
         </dev/tty >/dev/tty
@@ -847,9 +849,11 @@ zsh-ai-run() {
         || thinking_flag="none"
 
     if (( render )); then
+        local -a render_theme
+        _zsh_ai_render_theme_args render_theme
         _zsh_ai_chat "$model" "$sys" "$user_msg" "$max_tokens" "$temp" \
             --thinking "$thinking_flag" \
-            | "${ZSH_AI_MDRENDER_BIN:-$_ZSH_AI_DIR/bin/mdrender}" --color always
+            | "${ZSH_AI_MDRENDER_BIN:-$_ZSH_AI_DIR/bin/mdrender}" --color always "${render_theme[@]}"
     else
         _zsh_ai_chat "$model" "$sys" "$user_msg" "$max_tokens" "$temp" \
             --thinking "$thinking_flag"

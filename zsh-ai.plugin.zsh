@@ -90,14 +90,18 @@ EOF
         local log
         log=$(mktemp "$_ZSH_AI_TMPDIR/cli.XXXXXX")
         _zsh_ai_chat "$model" "$sys" "$*" 1024 0.2 > "$log"
-        "$_ZSH_AI_DIR/bin/mdview" "$log" --no-exit-on-eof \
+        local -a theme_cmd
+        _zsh_ai_view_theme_cmd theme_cmd
+        "${theme_cmd[@]}" "$_ZSH_AI_DIR/bin/mdview" "$log" --no-exit-on-eof \
             --title "answer"
         rm -f "$log"
     elif (( raw )); then
         _zsh_ai_chat "$model" "$sys" "$*" 1024 0.2
     else
+        local -a render_theme
+        _zsh_ai_render_theme_args render_theme
         _zsh_ai_chat "$model" "$sys" "$*" 1024 0.2 \
-            | "$_ZSH_AI_DIR/bin/mdrender" --color always
+            | "$_ZSH_AI_DIR/bin/mdrender" --color always "${render_theme[@]}"
     fi
 }
 

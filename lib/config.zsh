@@ -8,6 +8,9 @@
 #                   thinking display, system-prompt overrides
 #   :zsh-ai:fim     ^Xi fill-in-the-middle — model, max_tokens, keybind,
 #                   stop_tokens, optional template tokens
+#   :zsh-ai:view    viewer/renderer theme — `theme` is a name that drives
+#                   both bin/mdview (TEXTUAL_THEME) and bin/mdrender
+#                   (themes/<name>.ini, falling back to Rich defaults)
 #
 # All three respect a per-feature override for `endpoint`, `api_key`,
 # `api_key_env`, `http_timeout` and `enable_thinking` (the http layer
@@ -98,6 +101,45 @@ _zsh_ai_resolve_thinking() {
         no|false|0|off) print -r -- "false" ;;
         *)              print -r -- "auto"  ;;
     esac
+}
+
+# Build the `env` command-prefix that pins the Textual theme for a
+# spawned viewer (bin/mdview). Writes the prefix into the array named
+# by $1.
+#
+# Policy: if `zstyle ':zsh-ai:view' theme` is set, we set TEXTUAL_THEME
+# for the spawned process (it wins for our viewer). If it's unset, we
+# add no prefix — leaving whatever TEXTUAL_THEME the user may already
+# have in their environment untouched. We never export it globally.
+_zsh_ai_view_theme_cmd() {
+    local out_var="$1"
+    local -a pfx=()
+    local theme="$(_zsh_ai_cfg ':zsh-ai:view' theme '')"
+    [[ -n "$theme" ]] && pfx=(env "TEXTUAL_THEME=$theme")
+    set -A "$out_var" "${pfx[@]}"
+}
+
+# Build the `--theme-file` args that point bin/mdrender (Rich) at the INI
+# theme matching `zstyle ':zsh-ai:view' theme`. Writes into the array
+# named by $1. Rich has no global theme config, so we pass the file
+# explicitly. Resolution: an existing file path is used as-is; otherwise
+# the value is treated as a theme name under $_ZSH_AI_DIR/themes/<name>.ini.
+# If neither resolves (or the zstyle is unset) we emit no args, so
+# mdrender falls back to Rich's default styling.
+_zsh_ai_render_theme_args() {
+    local out_var="$1"
+    local -a _rt_args=()
+    local _rt_theme="$(_zsh_ai_cfg ':zsh-ai:view' theme '')"
+    if [[ -n "$_rt_theme" ]]; then
+        local _rt_file=""
+        if [[ -f "$_rt_theme" ]]; then
+            _rt_file="$_rt_theme"
+        elif [[ -f "$_ZSH_AI_DIR/themes/$_rt_theme.ini" ]]; then
+            _rt_file="$_ZSH_AI_DIR/themes/$_rt_theme.ini"
+        fi
+        [[ -n "$_rt_file" ]] && _rt_args=(--theme-file "$_rt_file")
+    fi
+    set -A "$out_var" "${_rt_args[@]}"
 }
 
 # ── Tmp dir ─────────────────────────────────────────────────────────────────

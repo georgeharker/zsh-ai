@@ -123,9 +123,10 @@ _zsh_ai_scratch_question_stream() {
     print -nu2 -- $'\r\e[K'
 
     if (( show_thinking && got_streaming )); then
-        local -a viewer_args
+        local -a viewer_args theme_cmd
         _zsh_ai_scratch_viewer_args viewer_args
-        "$viewer" "$viewer_fifo" \
+        _zsh_ai_view_theme_cmd theme_cmd
+        "${theme_cmd[@]}" "$viewer" "$viewer_fifo" \
             "${viewer_args[@]}" \
             --title "thinking" --subtitle "question" \
             </dev/tty >/dev/tty
@@ -163,16 +164,19 @@ _zsh_ai_scratch_question_stream() {
     # Answer display: render to terminal (default) or view in modal.
     local question_output="$(_zsh_ai_cfg ':zsh-ai:scratch' question_output render)"
     if [[ "${question_output:l}" == view ]]; then
-        local -a viewer_args
+        local -a viewer_args theme_cmd
         _zsh_ai_scratch_viewer_args viewer_args
-        "$viewer" "$content_log" \
+        _zsh_ai_view_theme_cmd theme_cmd
+        "${theme_cmd[@]}" "$viewer" "$content_log" \
             "${viewer_args[@]}" \
             --title "answer" --no-exit-on-eof \
             </dev/tty >/dev/tty
     else
         # render: pipe through bin/mdrender with --color always
         # since stdout is a pipe to less/etc. when the user wraps it.
-        "${ZSH_AI_MDRENDER_BIN:-$_ZSH_AI_DIR/bin/mdrender}" --color always < "$content_log"
+        local -a render_theme
+        _zsh_ai_render_theme_args render_theme
+        "${ZSH_AI_MDRENDER_BIN:-$_ZSH_AI_DIR/bin/mdrender}" --color always "${render_theme[@]}" < "$content_log"
     fi
     rm -f "$content_log"
 

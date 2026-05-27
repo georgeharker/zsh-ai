@@ -40,6 +40,7 @@ Cost per stop: one final commit + render.
 This is the same shape as textual's mount-new-blocks pattern adapted
 for rich's flat ANSI-string output instead of a widget tree.
 """
+
 from __future__ import annotations
 
 import io
@@ -52,6 +53,7 @@ from rich.console import Console, RenderableType
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.text import Text
+from rich.theme import Theme
 
 Mode = Literal["markdown", "raw"]
 
@@ -76,11 +78,19 @@ class LiveMarkdownStream:
         *,
         mode: Mode = "markdown",
         debounce: float = 0.1,
+        theme: Optional[Theme] = None,
+        code_theme: str = "monokai",
     ) -> "LiveMarkdownStream":
         """Create a started stream against ``console``. Caller is
         responsible for ``stop()`` (or use the returned object as a
         context manager)."""
-        stream = cls(console=console, mode=mode, debounce=debounce)
+        stream = cls(
+            console=console,
+            mode=mode,
+            debounce=debounce,
+            theme=theme,
+            code_theme=code_theme,
+        )
         stream.start()
         return stream
 
@@ -89,10 +99,14 @@ class LiveMarkdownStream:
         console: Console,
         mode: Mode = "markdown",
         debounce: float = 0.1,
+        theme: Optional[Theme] = None,
+        code_theme: str = "monokai",
     ) -> None:
         self.console = console
         self.mode: Mode = mode
         self.debounce = debounce
+        self._theme = theme
+        self._code_theme = code_theme
         self._buf = ""
         self._last_render = 0.0
         self._live: Optional[Live] = None
@@ -178,7 +192,7 @@ class LiveMarkdownStream:
         lines = self._buf.splitlines(keepends=True)
         if self._last_parsed_line >= len(lines):
             return
-        new_source = "".join(lines[self._last_parsed_line:])
+        new_source = "".join(lines[self._last_parsed_line :])
         if not new_source:
             return
         tokens = self._parser.parse(new_source)
@@ -210,10 +224,8 @@ class LiveMarkdownStream:
             return Text.from_ansi(self._buf)
         # markdown mode: prefix + trailing render
         lines = self._buf.splitlines(keepends=True)
-        trailing_source = "".join(lines[self._last_parsed_line:])
-        trailing_ansi = (
-            self._render_to_ansi(trailing_source) if trailing_source else ""
-        )
+        trailing_source = "".join(lines[self._last_parsed_line :])
+        trailing_ansi = self._render_to_ansi(trailing_source) if trailing_source else ""
         return Text.from_ansi(self._committed_ansi + trailing_ansi)
 
     def _render_to_ansi(self, markdown_source: str) -> str:
@@ -227,5 +239,6 @@ class LiveMarkdownStream:
             color_system="truecolor",
             width=self.console.size.width,
             legacy_windows=False,
-        ).print(Markdown(markdown_source), end="")
+            theme=self._theme,
+        ).print(Markdown(markdown_source, code_theme=self._code_theme), end="")
         return sink.getvalue()
