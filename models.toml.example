@@ -44,6 +44,14 @@ api_key_env = "OPENAI_API_KEY"    # name of the env var holding the key
 
 # Default profile per widget. Omitted widgets fall back to `default`
 # (the zstyle config). Keys: ask, modify, question, fim.
+#
+# A `profile` zstyle overrides this map — handy for per-machine defaults
+# (e.g. local vs cloud keyed on $HOST) without editing this file. Highest
+# precedence first:
+#   zstyle ':zsh-ai:scratch' profile_ask <name>   # one widget
+#   zstyle ':zsh-ai:scratch' profile     <name>   # all of ask/modify/question
+#   zstyle ':zsh-ai:fim'     profile     <name>
+#   zstyle ':zsh-ai:*'       profile     <name>   # global
 [widgets]
 ask      = "smart"
 modify   = "smart"

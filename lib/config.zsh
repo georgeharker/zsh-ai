@@ -154,6 +154,15 @@ _zsh_ai_render_theme_args() {
 # Per field the precedence is: TOML profile → TOML [defaults] → `:zsh-ai:*`
 # zstyle → the bridge's own default. So profiles only specify what differs,
 # and with no models file behaviour is exactly today's single-model zstyle.
+#
+# WHICH profile each widget defaults to is a separate axis (see
+# _zsh_ai_default_profile): a `profile` zstyle selector overrides the file's
+# [widgets] map, so you can pick the default per machine (e.g. local vs cloud
+# keyed on $HOST) without editing the file —
+#   zstyle ':zsh-ai:scratch' profile      cloud   # ask/modify/question
+#   zstyle ':zsh-ai:scratch' profile_ask  local   # just ask
+#   zstyle ':zsh-ai:fim'     profile      local
+#   zstyle ':zsh-ai:*'       profile      cloud   # global default
 typeset -ga _ZSH_AI_PROFILES=()
 typeset -gA _ZSH_AI_WIDGETS=()
 typeset -gA _ZSH_AI_PROFILE_FIELDS=()
@@ -196,10 +205,23 @@ _zsh_ai_profiles() {
     print -rl -- "${(@u)names}"
 }
 
-# Per-widget default profile (TOML `widgets` map, else `default`).
+# Per-widget default profile. Resolution, highest first:
+#   1. zstyle `:zsh-ai:<ctx>` profile_<feature>   (per-widget override)
+#   2. zstyle `:zsh-ai:<ctx>` profile             (per-context: all scratch / fim)
+#   3. zstyle `:zsh-ai:*`     profile             (global)
+#   4. the models-file [widgets] map
+#   5. `default` (the zstyle single-model config)
+# ctx is :zsh-ai:scratch for ask/modify/question, :zsh-ai:fim for fim. The
+# zstyle selectors let you pick the default per machine (e.g. local vs cloud
+# keyed on $HOST in an ai-configure hook) without editing the models file.
 _zsh_ai_default_profile() {
-    local p=""
-    _zsh_ai_models_load && p="${_ZSH_AI_WIDGETS[$1]-}"
+    local feature="$1"
+    local ctx=':zsh-ai:scratch'; [[ "$feature" == fim ]] && ctx=':zsh-ai:fim'
+    local p
+    p="$(_zsh_ai_cfg "$ctx" "profile_${feature}" '')"
+    [[ -z "$p" ]] && p="$(_zsh_ai_cfg "$ctx" profile '')"
+    [[ -z "$p" ]] && p="$(_zsh_ai_cfg ':zsh-ai:*' profile '')"
+    [[ -z "$p" ]] && { _zsh_ai_models_load && p="${_ZSH_AI_WIDGETS[$feature]-}"; }
     print -r -- "${p:-default}"
 }
 
