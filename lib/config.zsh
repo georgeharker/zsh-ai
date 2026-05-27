@@ -219,9 +219,9 @@ _zsh_ai_model_args() {
     local ctx=':zsh-ai:scratch'; [[ "$feature" == fim ]] && ctx=':zsh-ai:fim'
     local def_max def_temp
     case "$feature" in
-        fim)      def_max=1024; def_temp=0.1 ;;
-        question) def_max=4096; def_temp=0.2 ;;
-        *)        def_max=1024; def_temp=0.2 ;;
+        fim)      def_max=1024; def_temp=1.0 ;;
+        question) def_max=4096; def_temp=1.0 ;;
+        *)        def_max=1024; def_temp=1.0 ;;
     esac
     # Local ctx drives _zsh_ai_resolve's per-feature endpoint/key override.
     local _zsh_ai_ctx="$ctx"

@@ -95,7 +95,11 @@ _zsh_ai_scratch_build_display() {
         _build_post+=$'\n\n'
         local msg_start=${#_build_post}
         _build_post+="       ${_zsh_ai_scratch_message}"
-        _build_rh+=("$((buf_len + msg_start)) $((buf_len + ${#_build_post})) $DIM $MEMO")
+        # Bridge errors render red+bold; ordinary status (e.g. no-candidates)
+        # stays dim.
+        local msg_style="$DIM"
+        (( _zsh_ai_scratch_message_error )) && msg_style='fg=red,bold'
+        _build_rh+=("$((buf_len + msg_start)) $((buf_len + ${#_build_post})) $msg_style $MEMO")
         return 0
     fi
 

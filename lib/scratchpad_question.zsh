@@ -149,7 +149,7 @@ _zsh_ai_scratch_question_stream() {
     rm -f "$bridge_fifo" "$viewer_fifo" "$thinking_log" "$status_fifo"
 
     if (( ! user_aborted )) && (( bridge_rc != 0 )) && [[ -s "$bridge_err" ]]; then
-        print -ru2 -- "zsh-ai: bridge failed (exit $bridge_rc):"
+        print -Pru2 -- "%F{red}zsh-ai: bridge failed (exit $bridge_rc):%f"
         cat "$bridge_err" >&2
     fi
     rm -f "$bridge_err"

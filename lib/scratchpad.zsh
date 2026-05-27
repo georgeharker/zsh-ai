@@ -69,6 +69,7 @@ typeset -g  _zsh_ai_scratch_index=0
 typeset -g  _zsh_ai_scratch_saved_buffer=""
 typeset -g  _zsh_ai_scratch_saved_cursor=0
 typeset -g  _zsh_ai_scratch_message=""         # transient status message (e.g. "[no candidates]")
+typeset -g  _zsh_ai_scratch_message_error=0    # 1 = render the message in red (bridge error)
 typeset -g  _zsh_ai_scratch_thinking_override=""  # "" = use config, "true" / "false" = force for next call
 typeset -g  _zsh_ai_scratch_thinking_log=""       # persistent thinking-output log file (kept for relaunch; rm'd on session end)
 
@@ -331,23 +332,31 @@ _zsh_ai_scratch_kick_off() {
     # force a clean prompt redraw.
     zle reset-prompt 2>/dev/null
 
-    # Surface bridge errors AFTER the viewer is gone so the message is
-    # actually readable. User-abort (q/Esc dismiss) suppresses the error
-    # since we caused the bridge exit ourselves.
-    if (( ! user_aborted )) && (( bridge_rc != 0 )) && [[ -s "$bridge_err" ]]; then
-        local err_summary="$(head -1 "$bridge_err")"
-        zle -M "zsh-ai: bridge failed: $err_summary"
-        print -ru2 -- "zsh-ai: bridge failed (exit $bridge_rc):"
-        cat "$bridge_err" >&2
-    fi
-    rm -f "$bridge_err"
-
     # User-abort path: jump straight to cancel — no candidates to parse.
+    # (User-abort suppresses the error below since we caused the exit.)
     if (( user_aborted )); then
-        rm -f "$content_log"
+        rm -f "$bridge_err" "$content_log"
         _zsh_ai_scratch_cancel
         return 0
     fi
+
+    # Bridge failed (connection refused, auth, bad model/endpoint, …).
+    # Surface the error IN the scratchpad in red rather than letting the
+    # empty content fall through to a misleading "[no candidates]". Full
+    # detail still goes to stderr; the first line (trimmed) shows inline.
+    if (( bridge_rc != 0 )); then
+        local err_summary="$(head -1 "$bridge_err" 2>/dev/null)"
+        [[ -z "$err_summary" ]] && err_summary="bridge failed (exit $bridge_rc)"
+        (( ${#err_summary} > 120 )) && err_summary="${err_summary[1,117]}…"
+        print -ru2 -- "zsh-ai: bridge failed (exit $bridge_rc):"
+        [[ -s "$bridge_err" ]] && cat "$bridge_err" >&2
+        rm -f "$bridge_err" "$content_log"
+        _zsh_ai_scratch_message="error: ${err_summary}  ·  ^G: retry · esc: cancel"
+        _zsh_ai_scratch_message_error=1
+        zle reset-prompt
+        return 0
+    fi
+    rm -f "$bridge_err"
 
     # Process the captured content into candidates.
     local content=""
@@ -356,10 +365,12 @@ _zsh_ai_scratch_kick_off() {
 
     if ! _zsh_ai_scratch_parse_candidates "$content"; then
         _zsh_ai_scratch_message="[no candidates · ^G: retry · esc: cancel]"
+        _zsh_ai_scratch_message_error=0
         zle reset-prompt
         return 0
     fi
     _zsh_ai_scratch_message=""
+    _zsh_ai_scratch_message_error=0
     _zsh_ai_scratch_candidates=( "${reply[@]}" )
     _zsh_ai_scratch_index=1
     _zsh_ai_scratch_state="select"
@@ -445,6 +456,7 @@ _zsh_ai_scratch_reset_state() {
     _zsh_ai_scratch_candidates=()
     _zsh_ai_scratch_index=0
     _zsh_ai_scratch_message=""
+    _zsh_ai_scratch_message_error=0
     _zsh_ai_scratch_thinking_override=""
     # Drop the per-session thinking log (kept across kick_off → select
     # so the relaunch widget can re-view it; cleaned up on accept/cancel).
@@ -619,10 +631,13 @@ _zsh_ai_scratch_enter() {
     return 0
 }
 
-# ^G: regen in select state. No-op otherwise.
+# ^G: re-run the last submitted instruction. Works in select state (regen
+# candidates) AND after a failed/empty/errored result (the instruction is
+# still pending, no fresh edit) — so the "^G: retry" hint on the no-candidates
+# and error messages is honoured. No-op while typing a fresh instruction
+# (none submitted yet) or after ^X^X edit (instruction un-submitted).
 _zsh_ai_scratch_g_action() {
-    if [[ "$_zsh_ai_scratch_state" == "select" ]]; then
-        [[ -z "$_zsh_ai_scratch_instruction" ]] && return 0
+    if [[ -n "$_zsh_ai_scratch_instruction" ]]; then
         BUFFER=""
         CURSOR=0
         _zsh_ai_scratch_kick_off "$_zsh_ai_scratch_instruction"
