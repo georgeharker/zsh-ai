@@ -1,0 +1,8 @@
+#!/usr/bin/env zsh
+# bin/zsh-ai-models — emit cached zsh model-profile assignments from the
+# TOML models file. Execs the venv python with `-m zsh_ai.models`, which
+# the plugin caches under $XDG_CACHE_HOME/zsh-ai/ and sources. Owning this
+# file (vs a [project.scripts] entry) keeps it free of the launcher cruft;
+# see bin/zsh-ai-llm for the same pattern.
+
+exec "${0:A:h:h}/.venv/bin/python" -m zsh_ai.models "$@"

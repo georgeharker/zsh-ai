@@ -32,11 +32,6 @@
 #   - You're on llama.cpp with a model whose tokeniser knows the FIM tokens.
 #   - The server is doing the templating server-side.
 
-# Read FIM model.
-_zsh_ai_fim_model() {
-    _zsh_ai_cfg ':zsh-ai:fim' model ''
-}
-
 # Build the prompt + suffix pair for the underlying completions call.
 # Sets local-scope $_fim_prompt and $_fim_suffix; suffix is empty in
 # template mode so the body builder skips the `suffix` JSON field.
@@ -55,11 +50,25 @@ _zsh_ai_fim_build_request() {
     fi
 }
 
-# Resolve stop tokens. Prefers the multi-value `stop_tokens` zstyle (zsh's
-# native way to express a list); falls back to single-value `stop` zstyle
-# for back-compat; if neither is set, defaults to a single newline.
+# Resolve stop tokens for the active FIM profile. Precedence:
+#   1. the active model profile's `stop` (from a models file)
+#   2. the multi-value `stop_tokens` zstyle (zsh's native list form)
+#   3. the single-value `stop` zstyle (back-compat)
+#   4. a single newline
+# This one function feeds BOTH the `--stop` flags (_zsh_ai_fim_insert) and
+# the response stripping (_zsh_ai_fim_clean_response), so making it
+# profile-aware makes both profile-aware.
 _zsh_ai_fim_stops() {
     reply=()
+    # Profile `stop` is emitted by bin/zsh-ai-models as a US-joined (0x1f)
+    # value, since zsh assoc values are flat strings — split it back.
+    local profile="$(_zsh_ai_current_profile fim)"
+    _zsh_ai_models_load >/dev/null 2>&1
+    local pstop="${_ZSH_AI_PROFILE_FIELDS[${profile}:stop]-}"
+    if [[ -n "$pstop" ]]; then
+        reply=( "${(@ps:\x1f:)pstop}" )
+        return 0
+    fi
     zstyle -a ':zsh-ai:fim' stop_tokens reply
     if (( ${#reply} == 0 )); then
         local single="$(_zsh_ai_cfg ':zsh-ai:fim' stop '')"
@@ -97,21 +106,18 @@ _zsh_ai_fim_insert() {
     _zsh_ai_cfg_bool ':zsh-ai:fim' enabled yes || return 0
     _zsh_ai_async_running && return 0
 
-    # Per-feature endpoint/api_key override; see lib/llm.zsh.
+    # Per-feature endpoint/api_key override; consumed by _zsh_ai_model_args.
     local _zsh_ai_ctx=':zsh-ai:fim'
 
-    local model
-    model="$(_zsh_ai_fim_model)"
-    if [[ -z "$model" ]]; then
-        zle -M "zsh-ai: configure model with  zstyle ':zsh-ai:fim' model <name>"
+    local -a margs
+    if ! _zsh_ai_model_args fim "$(_zsh_ai_current_profile fim)" margs; then
+        zle -M "zsh-ai: configure model with  zstyle ':zsh-ai:fim' model <name> (or a models file)"
         return 0
     fi
 
     local lbuf="$LBUFFER" rbuf="$RBUFFER"
     [[ -z "$lbuf$rbuf" ]] && return 0
 
-    local max_tokens="$(_zsh_ai_cfg ':zsh-ai:fim' max_tokens 60)"
-    local temp="$(_zsh_ai_cfg ':zsh-ai:fim' temperature 0.1)"
     local -a stops
     _zsh_ai_fim_stops; stops=("${reply[@]}")
 
@@ -120,10 +126,14 @@ _zsh_ai_fim_insert() {
 
     _zsh_ai_fim_pending_lbuf="$lbuf"
 
-    # Submit and return — async layer drives the spinner and calls back when
-    # the response arrives.
-    _zsh_ai_async_run "filling" _zsh_ai_fim_complete \
-        _zsh_ai_completion "$model" "$_fim_prompt" "$_fim_suffix" "$max_tokens" "$temp" "${stops[@]}"
+    # Build the bridge completion command from the profile's model flags
+    # plus the per-call FIM prompt/suffix/stops, then hand it to the async
+    # layer (which runs it in a subshell, capturing stdout into REPLY).
+    local -a cmd=("$(_zsh_ai_llm_bin)" complete "${margs[@]}" --prompt "$_fim_prompt")
+    [[ -n "$_fim_suffix" ]] && cmd+=(--suffix "$_fim_suffix")
+    local s; for s in "${stops[@]}"; do [[ -n "$s" ]] && cmd+=(--stop "$s"); done
+
+    _zsh_ai_async_run "filling" _zsh_ai_fim_complete "${cmd[@]}"
     return 0
 }
 

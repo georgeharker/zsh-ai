@@ -1,0 +1,51 @@
+# zsh-ai multi-model config (TOML). Optional.
+#
+# Copy to one of:
+#   $XDG_CONFIG_HOME/zsh-ai/models.toml   (or ~/.config/zsh-ai/models.toml)
+# or point at it explicitly:
+#   zstyle ':zsh-ai:*' models_file ~/path/to/models.toml
+#
+# WITHOUT this file the plugin uses the single model configured via zstyle
+# (the `default` profile) exactly as before — this file is purely additive.
+#
+# Each [models.<name>] is a profile bundling the model parts the bridge
+# accepts. Per field the precedence is:
+#   [models.<name>]  >  [defaults]  >  zstyle ':zsh-ai:*'  >  bridge default
+# so a profile only needs to list what differs. Switch the active profile
+# at runtime with Alt-M (in the scratchpad) or `zsh-ai-model <name>`, and
+# per-widget defaults via [widgets] below.
+#
+# Parsed by bin/zsh-ai-models (Python/tomllib — no jq) and cached under
+# $XDG_CACHE_HOME/zsh-ai/, regenerated when this file changes.
+
+# Shared values merged into every profile (override per-profile as needed).
+[defaults]
+endpoint        = "http://localhost:11434/v1"
+max_tokens      = 1024
+temperature     = 0.2
+enable_thinking = "auto"          # auto | true | false
+
+[models.fast]
+model      = "qwen2.5-coder:1.5b"
+max_tokens = 512
+enable_thinking = false
+# FIM stop tokens for this profile (used when a widget maps to it, e.g.
+# [widgets] fim below). Overrides `zstyle ':zsh-ai:fim' stop_tokens`.
+stop       = ["\n"]
+
+[models.smart]
+model = "qwen2.5-coder:7b-instruct"
+
+[models.cloud]
+model       = "gpt-4o-mini"
+endpoint    = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"    # name of the env var holding the key
+                                  # (use api_key = "..." for an inline key)
+
+# Default profile per widget. Omitted widgets fall back to `default`
+# (the zstyle config). Keys: ask, modify, question, fim.
+[widgets]
+ask      = "smart"
+modify   = "smart"
+question = "smart"
+fim      = "fast"

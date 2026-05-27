@@ -116,7 +116,11 @@ _zsh_ai_scratch_build_display() {
                 "true")  thinking_tag=" · thinking:on"  ;;
                 "false") thinking_tag=" · thinking:off" ;;
             esac
-            _build_post+="       [enter: ${hint_label} · esc: cancel · alt-t: thinking${thinking_tag}]"
+            # Active model profile, shown only once the user has switched
+            # (cheap var read — no profile loading on every keystroke).
+            local model_tag=""
+            [[ -n "$_zsh_ai_active_profile" ]] && model_tag=" · model:${_zsh_ai_active_profile}"
+            _build_post+="       [enter: ${hint_label} · esc: cancel · alt-t: thinking${thinking_tag} · alt-m: model${model_tag}]"
             _build_rh+=("$((buf_len + hint_start)) $((buf_len + ${#_build_post})) $DIM $MEMO")
             ;;
         select)

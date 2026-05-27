@@ -47,12 +47,13 @@ source "$_ZSH_AI_DIR/lib/fim.zsh"
 # (unrendered) output, pass --raw. For interactive widgets, use
 # ^Xa / ^Xm / ^Xq from any prompt.
 zsh-ai() {
-    local raw=0 view=0
+    local raw=0 view=0 profile=""
     while [[ "$1" == --* ]]; do
         case "$1" in
-            --raw)  raw=1; shift ;;
-            --view) view=1; shift ;;
-            --)     shift; break ;;
+            --raw)   raw=1; shift ;;
+            --view)  view=1; shift ;;
+            --model) profile="$2"; shift 2 ;;
+            --)      shift; break ;;
             *) print -ru2 -- "zsh-ai: unknown option $1"; return 2 ;;
         esac
     done
@@ -60,11 +61,12 @@ zsh-ai() {
         ""|-h|--help|help)
             cat <<'EOF'
 Usage:
-  zsh-ai [--raw|--view] <question>
+  zsh-ai [--raw|--view] [--model <name>] <question>
         ask a one-shot question
-          (default)  pretty-print the answer via bin/mdrender
-          --raw      stream raw bridge output to stdout (no rendering)
-          --view     open the answer in bin/mdview (scrollable modal)
+          (default)     pretty-print the answer via bin/mdrender
+          --raw         stream raw bridge output to stdout (no rendering)
+          --view        open the answer in bin/mdview (scrollable modal)
+          --model NAME  use a named model profile (see models.toml)
   zsh-ai -h | help    this message
 
 Interactively in zsh:
@@ -77,10 +79,12 @@ EOF
             ;;
     esac
 
-    local model="$(_zsh_ai_cfg ':zsh-ai:scratch' model '')"
-    if [[ -z "$model" ]]; then
+    [[ -z "$profile" ]] && profile="$(_zsh_ai_current_profile question)"
+    local _zsh_ai_ctx=':zsh-ai:scratch'
+    local -a margs   # shuck: ignore=C001   # passed by name to _zsh_ai_chat (${(@P)})
+    if ! _zsh_ai_model_args question "$profile" margs; then
         print -P "%F{red}zsh-ai: no model configured%f" >&2
-        print "  zstyle ':zsh-ai:scratch' model 'your-model'" >&2
+        print "  zstyle ':zsh-ai:scratch' model 'your-model'  (or set up a models file)" >&2
         return 1
     fi
     local sys="$_ZSH_AI_DEFAULT_QUESTION_SYSTEM"
@@ -89,18 +93,18 @@ EOF
         # Stream bridge output to a temp file, then open in the viewer.
         local log
         log=$(mktemp "$_ZSH_AI_TMPDIR/cli.XXXXXX")
-        _zsh_ai_chat "$model" "$sys" "$*" 1024 0.2 > "$log"
+        _zsh_ai_chat margs "$sys" "$*" > "$log"
         local -a theme_cmd
         _zsh_ai_view_theme_cmd theme_cmd
         "${theme_cmd[@]}" "$_ZSH_AI_DIR/bin/mdview" "$log" --no-exit-on-eof \
             --title "answer"
         rm -f "$log"
     elif (( raw )); then
-        _zsh_ai_chat "$model" "$sys" "$*" 1024 0.2
+        _zsh_ai_chat margs "$sys" "$*"
     else
         local -a render_theme
         _zsh_ai_render_theme_args render_theme
-        _zsh_ai_chat "$model" "$sys" "$*" 1024 0.2 \
+        _zsh_ai_chat margs "$sys" "$*" \
             | "$_ZSH_AI_DIR/bin/mdrender" --color always "${render_theme[@]}"
     fi
 }
