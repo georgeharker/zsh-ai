@@ -39,9 +39,14 @@ _zsh_ai_scratch_question_stream() {
     local _zsh_ai_thinking_key="enable_thinking_question"
     local _zsh_ai_thinking_forced="$_zsh_ai_scratch_thinking_override"
     _zsh_ai_scratch_thinking_override=""
-    local model="$(_zsh_ai_cfg ':zsh-ai:scratch' model '')"
-    local max_tokens="$(_zsh_ai_cfg ':zsh-ai:scratch' max_tokens 1024)"
-    local temp="$(_zsh_ai_cfg ':zsh-ai:scratch' temperature 0.2)"
+    local -a margs
+    if ! _zsh_ai_model_args question "$(_zsh_ai_current_profile question)" margs; then
+        zle -I
+        print -ru2 -- "zsh-ai: no model — set zstyle ':zsh-ai:scratch' model <name> or a models file"
+        [[ -n "$saved_buf" ]] && print -z -- "$saved_buf"
+        zle .accept-line
+        return 0
+    fi
     local sys="$(_zsh_ai_cfg ':zsh-ai:scratch' question_system_prompt '')"
     [[ -z "$sys" ]] && sys="$_ZSH_AI_DEFAULT_QUESTION_SYSTEM"
 
@@ -77,17 +82,12 @@ _zsh_ai_scratch_question_stream() {
     # can substitute mocks without touching the bin/ symlinks.
     local bridge="${ZSH_AI_BRIDGE_BIN:-$_ZSH_AI_DIR/bin/zsh-ai-llm}"
     local viewer="${ZSH_AI_MDVIEW_BIN:-$_ZSH_AI_DIR/bin/mdview}"
-    local -a common_args
-    _zsh_ai_llm_common_args common_args
     local -a bridge_args=(
         chat
-        --model "$model"
+        "${margs[@]}"
         --user "$instr"
-        --max-tokens "$max_tokens"
-        --temperature "$temp"
         --content "$content_log"
         --status-file "$status_fifo"
-        "${common_args[@]}"
     )
     [[ -n "$sys" ]] && bridge_args+=(--system "$sys")
     if (( show_thinking )); then
@@ -149,7 +149,7 @@ _zsh_ai_scratch_question_stream() {
     rm -f "$bridge_fifo" "$viewer_fifo" "$thinking_log" "$status_fifo"
 
     if (( ! user_aborted )) && (( bridge_rc != 0 )) && [[ -s "$bridge_err" ]]; then
-        print -ru2 -- "zsh-ai: bridge failed (exit $bridge_rc):"
+        print -Pru2 -- "%F{red}zsh-ai: bridge failed (exit $bridge_rc):%f"
         cat "$bridge_err" >&2
     fi
     rm -f "$bridge_err"

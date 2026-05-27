@@ -8,6 +8,7 @@ Two subcommands:
 Both share the connection-level args (model, endpoint, key, …) declared
 in :func:`_add_common`. Per-subcommand args live with their handler.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,7 +30,6 @@ def _add_common(s: argparse.ArgumentParser) -> None:
     )
     s.add_argument("--api-key", default="")
     s.add_argument("--api-key-env", default="")
-    s.add_argument("--no-stream", action="store_true")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -50,22 +50,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="maps to chat_template_kwargs.enable_thinking",
     )
     chat.add_argument(
-        "--content", default="-",
+        "--content",
+        default="-",
         help="content sink: -, PATH, or none (default: -)",
     )
     chat.add_argument(
-        "--thinking", default="none",
+        "--thinking",
+        default="none",
         help="thinking sink: -, PATH, inline, or none (default: none). "
-             "inline merges reasoning into the content stream, "
-             "separated from real content by a blank line",
+        "inline merges reasoning into the content stream, "
+        "separated from real content by a blank line",
     )
     chat.add_argument(
-        "--status-file", default="",
+        "--status-file",
+        default="",
         help="path (file or fifo) to receive status lines: "
-             "'streaming\\n' on first chunk from the API, "
-             "'complete\\n' on clean exit, 'error\\n' on exception. "
-             "Lets a sidecar viewer update its UI on real bridge events "
-             "rather than guessing from data flow.",
+        "'streaming\\n' on first chunk from the API, "
+        "'complete\\n' on clean exit, 'error\\n' on exception. "
+        "Lets a sidecar viewer update its UI on real bridge events "
+        "rather than guessing from data flow.",
     )
 
     comp = sub.add_parser("complete", help="text-completions endpoint (FIM)")
@@ -73,7 +76,9 @@ def build_parser() -> argparse.ArgumentParser:
     comp.add_argument("--prompt", required=True)
     comp.add_argument("--suffix", default="")
     comp.add_argument(
-        "--stop", action="append", default=[],
+        "--stop",
+        action="append",
+        default=[],
         help="stop token (repeatable)",
     )
 

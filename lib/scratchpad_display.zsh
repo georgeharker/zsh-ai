@@ -95,7 +95,11 @@ _zsh_ai_scratch_build_display() {
         _build_post+=$'\n\n'
         local msg_start=${#_build_post}
         _build_post+="       ${_zsh_ai_scratch_message}"
-        _build_rh+=("$((buf_len + msg_start)) $((buf_len + ${#_build_post})) $DIM $MEMO")
+        # Bridge errors render red+bold; ordinary status (e.g. no-candidates)
+        # stays dim.
+        local msg_style="$DIM"
+        (( _zsh_ai_scratch_message_error )) && msg_style='fg=red,bold'
+        _build_rh+=("$((buf_len + msg_start)) $((buf_len + ${#_build_post})) $msg_style $MEMO")
         return 0
     fi
 
@@ -116,7 +120,11 @@ _zsh_ai_scratch_build_display() {
                 "true")  thinking_tag=" · thinking:on"  ;;
                 "false") thinking_tag=" · thinking:off" ;;
             esac
-            _build_post+="       [enter: ${hint_label} · esc: cancel · alt-t: thinking${thinking_tag}]"
+            # Active model profile, shown only once the user has switched
+            # (cheap var read — no profile loading on every keystroke).
+            local model_tag=""
+            [[ -n "$_zsh_ai_active_profile" ]] && model_tag=" · model:${_zsh_ai_active_profile}"
+            _build_post+="       [enter: ${hint_label} · esc: cancel · alt-t: thinking${thinking_tag} · alt-m: model${model_tag}]"
             _build_rh+=("$((buf_len + hint_start)) $((buf_len + ${#_build_post})) $DIM $MEMO")
             ;;
         select)

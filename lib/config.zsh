@@ -2,7 +2,8 @@
 # lib/config.zsh — zstyle-based config readers + shared tmpdir for zsh-ai.
 #
 # Namespace layout:
-#   :zsh-ai:*       shared (endpoint, api_key / api_key_env, http_timeout)
+#   :zsh-ai:*       shared (endpoint, api_key / api_key_env, http_timeout,
+#                   models_file — path to a TOML multi-model config)
 #   :zsh-ai:scratch ^Xa ask, ^Xm modify, ^Xq question — model, max_tokens,
 #                   temperature, candidates, keybinds, formatter, streaming,
 #                   thinking display, system-prompt overrides
@@ -140,6 +141,129 @@ _zsh_ai_render_theme_args() {
         [[ -n "$_rt_file" ]] && _rt_args=(--theme-file "$_rt_file")
     fi
     set -A "$out_var" "${_rt_args[@]}"
+}
+
+# ── Multi-model profiles ─────────────────────────────────────────────────────
+# A "profile" bundles every model part the bridge takes as a flag
+# (model, endpoint, api key, max_tokens, temperature, enable_thinking).
+# The zstyle config IS the `default` profile, resolved per feature. A TOML
+# models file (`zstyle ':zsh-ai:*' models_file`, else
+# $XDG_CONFIG_HOME/zsh-ai/models.toml) adds named overlay profiles, parsed
+# by bin/zsh-ai-models (Python — no jq) into a cached zsh file we source.
+#
+# Per field the precedence is: TOML profile → TOML [defaults] → `:zsh-ai:*`
+# zstyle → the bridge's own default. So profiles only specify what differs,
+# and with no models file behaviour is exactly today's single-model zstyle.
+typeset -ga _ZSH_AI_PROFILES=()
+typeset -gA _ZSH_AI_WIDGETS=()
+typeset -gA _ZSH_AI_PROFILE_FIELDS=()
+typeset -g  _zsh_ai_active_profile=""   # "" = use the widget's default
+
+# Path to the TOML models file, or nothing if none exists.
+_zsh_ai_models_file() {
+    local f="$(_zsh_ai_cfg ':zsh-ai:*' models_file '')"
+    [[ -z "$f" ]] && f="${XDG_CONFIG_HOME:-$HOME/.config}/zsh-ai/models.toml"
+    [[ -f "$f" ]] && print -r -- "$f"
+}
+
+# Lazily (re)generate + source the cached interpretation of the models
+# file. Regenerates only when the source is newer than the cache (or it's
+# missing), so there's no shell-startup cost — the python parse runs at
+# most once per edit, on first use. Returns 0 if a models file is loaded.
+_zsh_ai_models_load() {
+    local src="$(_zsh_ai_models_file)"
+    [[ -z "$src" ]] && return 1
+    local cache="${XDG_CACHE_HOME:-$HOME/.cache}/zsh-ai/models.cache.zsh"
+    if [[ ! -f "$cache" || "$src" -nt "$cache" ]]; then
+        mkdir -p "${cache:h}"
+        local bin="${ZSH_AI_MODELS_BIN:-$_ZSH_AI_DIR/bin/zsh-ai-models}"
+        if "$bin" "$src" > "$cache.tmp.$$" 2>/dev/null; then
+            mv -f "$cache.tmp.$$" "$cache"
+        else
+            rm -f "$cache.tmp.$$"
+            return 1
+        fi
+    fi
+    source "$cache"  # shuck: ignore=C002   # cache path computed at runtime by design
+    return 0
+}
+
+# Profile names: `default` plus any from the models file (a TOML-defined
+# `default` folds onto the builtin one via dedup).
+_zsh_ai_profiles() {
+    local -a names=(default)
+    _zsh_ai_models_load && names+=("${_ZSH_AI_PROFILES[@]}")
+    print -rl -- "${(@u)names}"
+}
+
+# Per-widget default profile (TOML `widgets` map, else `default`).
+_zsh_ai_default_profile() {
+    local p=""
+    _zsh_ai_models_load && p="${_ZSH_AI_WIDGETS[$1]-}"
+    print -r -- "${p:-default}"
+}
+
+# Active profile for <feature>: the session override if set, else default.
+_zsh_ai_current_profile() {
+    print -r -- "${_zsh_ai_active_profile:-$(_zsh_ai_default_profile "$1")}"
+}
+
+# Build the bridge model-flag array for <feature> using profile <name>
+# into the array named by <out>. A TOML profile's fields overlay the
+# per-feature zstyle base; absent fields fall back to zstyle then the
+# bridge default. Profile `default` (with no TOML override) resolves
+# entirely from the existing per-feature zstyle — today's behaviour.
+# Returns 0 if a model was resolved, 1 if none (caller should report).
+_zsh_ai_model_args() {
+    local feature="$1" name="$2" out="$3"
+    local ctx=':zsh-ai:scratch'; [[ "$feature" == fim ]] && ctx=':zsh-ai:fim'
+    local def_max def_temp
+    case "$feature" in
+        fim)      def_max=1024; def_temp=1.0 ;;
+        question) def_max=4096; def_temp=1.0 ;;
+        *)        def_max=1024; def_temp=1.0 ;;
+    esac
+    # Local ctx drives _zsh_ai_resolve's per-feature endpoint/key override.
+    local _zsh_ai_ctx="$ctx"
+
+    _zsh_ai_models_load >/dev/null 2>&1   # populate the assocs if a file exists
+    local is_json=0
+    [[ -n "${_ZSH_AI_PROFILE_FIELDS[${name}:model]+x}" ]] && is_json=1
+
+    local jmodel="" jmax="" jtemp="" jep="" jake="" jak="" jth=""
+    if (( is_json )); then
+        jmodel="${_ZSH_AI_PROFILE_FIELDS[${name}:model]-}"
+        jmax="${_ZSH_AI_PROFILE_FIELDS[${name}:max_tokens]-}"
+        jtemp="${_ZSH_AI_PROFILE_FIELDS[${name}:temperature]-}"
+        jep="${_ZSH_AI_PROFILE_FIELDS[${name}:endpoint]-}"
+        jake="${_ZSH_AI_PROFILE_FIELDS[${name}:api_key_env]-}"
+        jak="${_ZSH_AI_PROFILE_FIELDS[${name}:api_key]-}"
+        jth="${_ZSH_AI_PROFILE_FIELDS[${name}:enable_thinking]-}"
+    fi
+
+    local -a a
+    local model="${jmodel:-$(_zsh_ai_cfg "$ctx" model '')}"
+    [[ -n "$model" ]] && a+=(--model "$model")
+    a+=(--max-tokens "${jmax:-$(_zsh_ai_cfg "$ctx" max_tokens "$def_max")}")
+    a+=(--temperature "${jtemp:-$(_zsh_ai_cfg "$ctx" temperature "$def_temp")}")
+    a+=(--endpoint "${jep:-$(_zsh_ai_resolve endpoint 'http://localhost:11434/v1')}")
+
+    local ake="${jake:-$(_zsh_ai_resolve api_key_env '')}"
+    if [[ -n "$ake" ]]; then
+        a+=(--api-key-env "$ake")
+    else
+        local ak="${jak:-$(_zsh_ai_resolve api_key '')}"
+        [[ -n "$ak" ]] && a+=(--api-key "$ak")
+    fi
+
+    # Thinking: Alt-T forced override wins, then profile, then zstyle/auto.
+    local th="${_zsh_ai_thinking_forced:-}"
+    [[ -z "$th" ]] && th="$jth"
+    [[ -z "$th" ]] && th="$(_zsh_ai_resolve_thinking)"
+    a+=(--enable-thinking "$th")
+
+    set -A "$out" "${a[@]}"
+    [[ -n "$model" ]]
 }
 
 # ── Tmp dir ─────────────────────────────────────────────────────────────────

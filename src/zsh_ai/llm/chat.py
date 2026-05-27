@@ -1,4 +1,5 @@
 """chat-completions subcommand."""
+
 from __future__ import annotations
 
 import os
@@ -12,6 +13,7 @@ from .stream import StreamSplitter
 
 class ChatArgs(CommonArgs):
     """Args specific to the ``chat`` subcommand."""
+
     system: str
     user: str
     enable_thinking: str
@@ -79,35 +81,26 @@ def cmd_chat(args: ChatArgs) -> int:
     if extra:
         kwargs["extra_body"] = extra
 
+    kwargs["stream"] = True
     rc = 0
     seen_any_chunk = False
     try:
-        if args["no_stream"]:
-            kwargs["stream"] = False
-            resp = client.chat.completions.create(**kwargs)
-            _write_status(status_fp, "streaming")
-            seen_any_chunk = True
-            msg = resp.choices[0].message
-            splitter.feed_reasoning_delta(getattr(msg, "reasoning_content", None) or "")
-            splitter.feed_content_delta(msg.content or "")
-        else:
-            kwargs["stream"] = True
-            for chunk in client.chat.completions.create(**kwargs):
-                if not chunk.choices:
-                    continue
-                if not seen_any_chunk:
-                    # Signal "first byte received from API" regardless of
-                    # whether it's reasoning or content — TTFT mitigation
-                    # cares about *any* sign of life.
-                    _write_status(status_fp, "streaming")
-                    seen_any_chunk = True
-                delta = chunk.choices[0].delta
-                r = getattr(delta, "reasoning_content", None) or ""
-                c = getattr(delta, "content", None) or ""
-                if r:
-                    splitter.feed_reasoning_delta(r)
-                if c:
-                    splitter.feed_content_delta(c)
+        for chunk in client.chat.completions.create(**kwargs):
+            if not chunk.choices:
+                continue
+            if not seen_any_chunk:
+                # Signal "first byte received from API" regardless of
+                # whether it's reasoning or content — TTFT mitigation
+                # cares about *any* sign of life.
+                _write_status(status_fp, "streaming")
+                seen_any_chunk = True
+            delta = chunk.choices[0].delta
+            r = getattr(delta, "reasoning_content", None) or ""
+            c = getattr(delta, "content", None) or ""
+            if r:
+                splitter.feed_reasoning_delta(r)
+            if c:
+                splitter.feed_content_delta(c)
         _write_status(status_fp, "complete")
     except KeyboardInterrupt:
         _write_status(status_fp, "interrupted")

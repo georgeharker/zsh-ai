@@ -1,4 +1,5 @@
 """text-completions (FIM) subcommand."""
+
 from __future__ import annotations
 
 import sys
@@ -9,6 +10,7 @@ from .client import CommonArgs, build_client
 
 class CompleteArgs(CommonArgs):
     """Args specific to the ``complete`` subcommand."""
+
     prompt: str
     suffix: str
     stop: list[str]
@@ -29,19 +31,13 @@ def cmd_complete(args: CompleteArgs) -> int:
     if args["stop"]:
         kwargs["stop"] = args["stop"]
 
+    kwargs["stream"] = True
     try:
-        if args["no_stream"]:
-            kwargs["stream"] = False
-            resp = client.completions.create(**kwargs)
-            sys.stdout.write(resp.choices[0].text or "")
-            sys.stdout.flush()
-        else:
-            kwargs["stream"] = True
-            for chunk in client.completions.create(**kwargs):
-                t = chunk.choices[0].text if chunk.choices else ""
-                if t:
-                    sys.stdout.write(t)
-                    sys.stdout.flush()
+        for chunk in client.completions.create(**kwargs):
+            t = chunk.choices[0].text if chunk.choices else ""
+            if t:
+                sys.stdout.write(t)
+                sys.stdout.flush()
     except KeyboardInterrupt:
         return 130
     except Exception as e:

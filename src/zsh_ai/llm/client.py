@@ -4,6 +4,7 @@ Kept tiny on purpose — the SDK does the heavy lifting; this module
 just makes sure both subcommands resolve the endpoint, API key, and
 the ``enable_thinking`` extra-body the same way.
 """
+
 from __future__ import annotations
 
 import os
@@ -13,6 +14,7 @@ from typing import Any, Dict, TypedDict
 
 class BridgeArgs(TypedDict):
     """The subset of CLI args needed to build an OpenAI client."""
+
     endpoint: str
     api_key: str
     api_key_env: str
@@ -20,10 +22,10 @@ class BridgeArgs(TypedDict):
 
 class CommonArgs(BridgeArgs):
     """Args shared by every subcommand (chat, complete, …)."""
+
     model: str
     max_tokens: int
     temperature: float
-    no_stream: bool
 
 
 def build_client(args: BridgeArgs) -> Any:

@@ -69,6 +69,7 @@ typeset -g  _zsh_ai_scratch_index=0
 typeset -g  _zsh_ai_scratch_saved_buffer=""
 typeset -g  _zsh_ai_scratch_saved_cursor=0
 typeset -g  _zsh_ai_scratch_message=""         # transient status message (e.g. "[no candidates]")
+typeset -g  _zsh_ai_scratch_message_error=0    # 1 = render the message in red (bridge error)
 typeset -g  _zsh_ai_scratch_thinking_override=""  # "" = use config, "true" / "false" = force for next call
 typeset -g  _zsh_ai_scratch_thinking_log=""       # persistent thinking-output log file (kept for relaunch; rm'd on session end)
 
@@ -159,25 +160,26 @@ _zsh_ai_scratch_kick_off() {
     setopt LOCAL_OPTIONS NO_MONITOR NO_NOTIFY
     local instruction="$1"
     local _zsh_ai_ctx=':zsh-ai:scratch'
-    local model="$(_zsh_ai_cfg ':zsh-ai:scratch' model '')"
-    if [[ -z "$model" ]]; then
-        zle -M "zsh-ai: configure model with  zstyle ':zsh-ai:scratch' model <name>"
-        return 1
-    fi
-
-    local max_tokens="$(_zsh_ai_cfg ':zsh-ai:scratch' max_tokens 200)"
-    local temp="$(_zsh_ai_cfg ':zsh-ai:scratch' temperature 0.2)"
 
     local sys user_msg
     _zsh_ai_scratch_build_prompts \
         "$_zsh_ai_scratch_mode" "$instruction" "$_zsh_ai_scratch_target"
 
     # Per-mode `enable_thinking_<mode>` override resolved via dynamic-
-    # scoped vars (lib/config.zsh:_zsh_ai_resolve_thinking).
+    # scoped vars (lib/config.zsh:_zsh_ai_resolve_thinking); consumed by
+    # _zsh_ai_model_args below.
     local _zsh_ai_thinking_key="enable_thinking_${_zsh_ai_scratch_mode}"
     local _zsh_ai_thinking_forced="$_zsh_ai_scratch_thinking_override"
     _zsh_ai_scratch_thinking_override=""
-    local thinking_flag="$(_zsh_ai_resolve_thinking)"
+
+    # Resolve the active profile's model flags (the `default` profile is
+    # the existing zstyle config; a models file adds named overlays).
+    local -a margs
+    if ! _zsh_ai_model_args "$_zsh_ai_scratch_mode" \
+            "$(_zsh_ai_current_profile "$_zsh_ai_scratch_mode")" margs; then
+        zle -M "zsh-ai: no model — set zstyle ':zsh-ai:scratch' model <name> or a models file"
+        return 1
+    fi
 
     local show_thinking=0
     _zsh_ai_cfg_bool ':zsh-ai:scratch' show_thinking yes && show_thinking=1
@@ -237,20 +239,12 @@ _zsh_ai_scratch_kick_off() {
     # can substitute mocks without touching the bin/ symlinks.
     local bridge="${ZSH_AI_BRIDGE_BIN:-$_ZSH_AI_DIR/bin/zsh-ai-llm}"
     local viewer="${ZSH_AI_MDVIEW_BIN:-$_ZSH_AI_DIR/bin/mdview}"
-    # Endpoint / auth: must use the canonical helper or the bridge
-    # defaults to ollama's port 11434, which is the wrong server for
-    # most setups → bridge fires 'error' before any chunk arrives.
-    local -a common_args
-    _zsh_ai_llm_common_args common_args
     local -a bridge_args=(
         chat
-        --model "$model"
+        "${margs[@]}"
         --user "$user_msg"
-        --max-tokens "$max_tokens"
-        --temperature "$temp"
         --content "$content_log"
         --status-file "$status_fifo"
-        "${common_args[@]}"
     )
     [[ -n "$sys" ]] && bridge_args+=(--system "$sys")
     if (( show_thinking )); then
@@ -338,23 +332,31 @@ _zsh_ai_scratch_kick_off() {
     # force a clean prompt redraw.
     zle reset-prompt 2>/dev/null
 
-    # Surface bridge errors AFTER the viewer is gone so the message is
-    # actually readable. User-abort (q/Esc dismiss) suppresses the error
-    # since we caused the bridge exit ourselves.
-    if (( ! user_aborted )) && (( bridge_rc != 0 )) && [[ -s "$bridge_err" ]]; then
-        local err_summary="$(head -1 "$bridge_err")"
-        zle -M "zsh-ai: bridge failed: $err_summary"
-        print -ru2 -- "zsh-ai: bridge failed (exit $bridge_rc):"
-        cat "$bridge_err" >&2
-    fi
-    rm -f "$bridge_err"
-
     # User-abort path: jump straight to cancel — no candidates to parse.
+    # (User-abort suppresses the error below since we caused the exit.)
     if (( user_aborted )); then
-        rm -f "$content_log"
+        rm -f "$bridge_err" "$content_log"
         _zsh_ai_scratch_cancel
         return 0
     fi
+
+    # Bridge failed (connection refused, auth, bad model/endpoint, …).
+    # Surface the error IN the scratchpad in red rather than letting the
+    # empty content fall through to a misleading "[no candidates]". Full
+    # detail still goes to stderr; the first line (trimmed) shows inline.
+    if (( bridge_rc != 0 )); then
+        local err_summary="$(head -1 "$bridge_err" 2>/dev/null)"
+        [[ -z "$err_summary" ]] && err_summary="bridge failed (exit $bridge_rc)"
+        (( ${#err_summary} > 120 )) && err_summary="${err_summary[1,117]}…"
+        print -ru2 -- "zsh-ai: bridge failed (exit $bridge_rc):"
+        [[ -s "$bridge_err" ]] && cat "$bridge_err" >&2
+        rm -f "$bridge_err" "$content_log"
+        _zsh_ai_scratch_message="error: ${err_summary}  ·  ^G: retry · esc: cancel"
+        _zsh_ai_scratch_message_error=1
+        zle reset-prompt
+        return 0
+    fi
+    rm -f "$bridge_err"
 
     # Process the captured content into candidates.
     local content=""
@@ -363,10 +365,12 @@ _zsh_ai_scratch_kick_off() {
 
     if ! _zsh_ai_scratch_parse_candidates "$content"; then
         _zsh_ai_scratch_message="[no candidates · ^G: retry · esc: cancel]"
+        _zsh_ai_scratch_message_error=0
         zle reset-prompt
         return 0
     fi
     _zsh_ai_scratch_message=""
+    _zsh_ai_scratch_message_error=0
     _zsh_ai_scratch_candidates=( "${reply[@]}" )
     _zsh_ai_scratch_index=1
     _zsh_ai_scratch_state="select"
@@ -452,6 +456,7 @@ _zsh_ai_scratch_reset_state() {
     _zsh_ai_scratch_candidates=()
     _zsh_ai_scratch_index=0
     _zsh_ai_scratch_message=""
+    _zsh_ai_scratch_message_error=0
     _zsh_ai_scratch_thinking_override=""
     # Drop the per-session thinking log (kept across kick_off → select
     # so the relaunch widget can re-view it; cleaned up on accept/cancel).
@@ -567,6 +572,22 @@ _zsh_ai_scratch_thinking_toggle() {
     return 0
 }
 
+# Alt-M inside the scratchpad: cycle the active model profile for the NEXT
+# call (and onward — the choice is sticky for the session). Cycles through
+# `default` plus any models-file profiles. No-op when there's only the
+# `default` profile (nothing to switch to).
+_zsh_ai_scratch_model_cycle() {
+    local -a profiles=( ${(f)"$(_zsh_ai_profiles)"} )
+    (( ${#profiles} <= 1 )) && { zle -M "zsh-ai: only the default model is configured"; return 0; }
+    local cur="$(_zsh_ai_current_profile "$_zsh_ai_scratch_mode")"
+    local i=${profiles[(I)$cur]}
+    (( i == 0 )) && i=1
+    _zsh_ai_active_profile="${profiles[i % ${#profiles} + 1]}"
+    _zsh_ai_scratch_render_now
+    zle -R
+    return 0
+}
+
 # ── State-aware widgets ─────────────────────────────────────────────────────
 # Bound in the single `zsh-ai-scratch` keymap. Each widget dispatches on
 # `_zsh_ai_scratch_state` (instruction → select) and decides what to do.
@@ -610,10 +631,13 @@ _zsh_ai_scratch_enter() {
     return 0
 }
 
-# ^G: regen in select state. No-op otherwise.
+# ^G: re-run the last submitted instruction. Works in select state (regen
+# candidates) AND after a failed/empty/errored result (the instruction is
+# still pending, no fresh edit) — so the "^G: retry" hint on the no-candidates
+# and error messages is honoured. No-op while typing a fresh instruction
+# (none submitted yet) or after ^X^X edit (instruction un-submitted).
 _zsh_ai_scratch_g_action() {
-    if [[ "$_zsh_ai_scratch_state" == "select" ]]; then
-        [[ -z "$_zsh_ai_scratch_instruction" ]] && return 0
+    if [[ -n "$_zsh_ai_scratch_instruction" ]]; then
         BUFFER=""
         CURSOR=0
         _zsh_ai_scratch_kick_off "$_zsh_ai_scratch_instruction"
@@ -711,10 +735,11 @@ _zsh_ai_scratch_cancel() {
 }
 
 # Optional debug logging — set ZSH_AI_DEBUG=1 (and optionally
-# ZSH_AI_DEBUG_LOG=/path/file, defaults to /tmp/zsh-ai.log).
+# ZSH_AI_DEBUG_LOG=/path/file, defaults to $_ZSH_AI_TMPDIR/debug.log
+# alongside the other runtime tempfiles).
 _zsh_ai_log() {
     [[ -z "${ZSH_AI_DEBUG:-}" ]] && return 0
-    local logfile="${ZSH_AI_DEBUG_LOG:-/tmp/zsh-ai.log}"
+    local logfile="${ZSH_AI_DEBUG_LOG:-${_ZSH_AI_TMPDIR:-/tmp}/debug.log}"
     print -r -- "$(date +%T.%N | cut -c1-12) $*" >> "$logfile" 2>/dev/null
 }
 
@@ -800,6 +825,38 @@ zsh-ai-reset() {
     print -- "zsh-ai: state reset"
 }
 
+# Switch the active model profile (or list them). The choice is sticky
+# for the session — it overrides each widget's default until changed.
+# With no arg, lists profiles and marks the active one. `default` is the
+# zstyle config; further profiles come from the models file.
+zsh-ai-model() {
+    local -a profiles=( ${(f)"$(_zsh_ai_profiles)"} )
+    if [[ -z "$1" ]]; then
+        print -- "active: ${_zsh_ai_active_profile:-(per-widget default)}"
+        print -- "profiles:"
+        local p
+        for p in "${profiles[@]}"; do
+            if [[ "$p" == "$_zsh_ai_active_profile" ]]; then
+                print -- "  * $p"
+            else
+                print -- "    $p"
+            fi
+        done
+        return 0
+    fi
+    if [[ "$1" == reset ]]; then
+        _zsh_ai_active_profile=""
+        print -- "zsh-ai: active model profile → (per-widget default)"
+        return 0
+    fi
+    if (( ${profiles[(I)$1]} == 0 )); then
+        print -ru2 -- "zsh-ai-model: unknown profile '$1' (have: ${profiles[*]})"
+        return 1
+    fi
+    _zsh_ai_active_profile="$1"
+    print -- "zsh-ai: active model profile → $1"
+}
+
 # Run the full plugin pipeline (bridge + optional renderer) headlessly.
 # Useful for scripting and for diagnosing streaming-render issues outside
 # the ZLE machinery.
@@ -831,18 +888,17 @@ zsh-ai-run() {
     esac
 
     local _zsh_ai_ctx=':zsh-ai:scratch'
-    local model="$(_zsh_ai_cfg ':zsh-ai:scratch' model '')"
-    if [[ -z "$model" ]]; then
-        print -ru2 -- "zsh-ai-run: no model configured"
-        return 1
-    fi
-    local max_tokens="$(_zsh_ai_cfg ':zsh-ai:scratch' max_tokens 200)"
-    local temp="$(_zsh_ai_cfg ':zsh-ai:scratch' temperature 0.2)"
+    local _zsh_ai_thinking_key="enable_thinking_${mode}"
 
     local sys user_msg
     _zsh_ai_scratch_build_prompts "$mode" "$query" "$target"
 
-    local _zsh_ai_thinking_key="enable_thinking_${mode}"
+    local -a margs   # shuck: ignore=C001   # passed by name to _zsh_ai_chat (${(@P)})
+    if ! _zsh_ai_model_args "$mode" "$(_zsh_ai_current_profile "$mode")" margs; then
+        print -ru2 -- "zsh-ai-run: no model configured"
+        return 1
+    fi
+
     local thinking_flag
     _zsh_ai_cfg_bool ':zsh-ai:scratch' show_thinking yes \
         && thinking_flag="-" \
@@ -851,12 +907,10 @@ zsh-ai-run() {
     if (( render )); then
         local -a render_theme
         _zsh_ai_render_theme_args render_theme
-        _zsh_ai_chat "$model" "$sys" "$user_msg" "$max_tokens" "$temp" \
-            --thinking "$thinking_flag" \
+        _zsh_ai_chat margs "$sys" "$user_msg" --thinking "$thinking_flag" \
             | "${ZSH_AI_MDRENDER_BIN:-$_ZSH_AI_DIR/bin/mdrender}" --color always "${render_theme[@]}"
     else
-        _zsh_ai_chat "$model" "$sys" "$user_msg" "$max_tokens" "$temp" \
-            --thinking "$thinking_flag"
+        _zsh_ai_chat margs "$sys" "$user_msg" --thinking "$thinking_flag"
     fi
 }
 
@@ -876,6 +930,7 @@ _zsh_ai_scratch_register() {
     zle -N _zsh_ai_scratch_down
     zle -N _zsh_ai_scratch_up
     zle -N _zsh_ai_scratch_thinking_toggle
+    zle -N _zsh_ai_scratch_model_cycle
     zle -N _zsh_ai_scratch_relaunch_thinking
     zle -N _zsh_ai_scratch_g_action
     zle -N _zsh_ai_scratch_edit_instruction
@@ -895,6 +950,8 @@ _zsh_ai_scratch_register() {
     # Alt-T cycles the thinking override for the next call. \et is the
     # ESC-prefix encoding of Alt-T that zsh sees on most terminals.
     bindkey -M zsh-ai-scratch $'\et' _zsh_ai_scratch_thinking_toggle
+    # Alt-M cycles the active model profile (\em = ESC-prefix Alt-M).
+    bindkey -M zsh-ai-scratch $'\em' _zsh_ai_scratch_model_cycle
 
     # Cancel: bare \e is unsafe — it's a PREFIX for arrow keys (\e[A etc.).
     # Use \e\e (double-Esc) so both chars are known and ZLE waits
