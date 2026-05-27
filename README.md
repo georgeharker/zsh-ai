@@ -13,6 +13,7 @@ freeform questions, and fill-in-the-middle at the cursor.
 | `^Xi`    | FIM       | Fill-in-the-middle completion at the cursor                        |
 | `^Xv`    | (inside scratchpad) | Re-open the last thinking log in the viewer            |
 | `Alt-T`  | (inside scratchpad) | Cycle the next call's thinking flag: auto → on → off → auto |
+| `Alt-M`  | (inside scratchpad) | Cycle the active model profile (when a models file defines extras) |
 
 Backend is any OpenAI-compatible HTTP endpoint — llama.cpp's
 `--server`, ollama (`/v1`), LM Studio, vLLM, OpenRouter, etc. Running
@@ -23,8 +24,10 @@ Requirements
 ------------
 
 - `zsh` 5.x+
-- `python` 3.9+ and [`uv`](https://docs.astral.sh/uv/) — for the LLM
-  bridge and the bundled markdown viewer/renderer (textual + rich)
+- [`uv`](https://docs.astral.sh/uv/) and `python` 3.11+ — for the LLM
+  bridge, the bundled markdown viewer/renderer (textual + rich), and the
+  TOML models parser (stdlib `tomllib`). `uv sync` provisions the pinned
+  Python automatically, so you generally just need `uv`.
 
 Install
 -------
@@ -177,6 +180,108 @@ For chat-trained code models that need FIM tokens (Qwen-Coder,
 CodeLlama, DeepSeek-Coder, StarCoder), set the template trio — see
 comments at the end of `lib/fim.zsh` for the exact tokens per model.
 
+### Multiple models (profiles)
+
+The zstyle config above defines a single model — that's the `default`
+profile, and nothing here is required. To switch between several models at
+runtime (e.g. a fast local one and a larger remote one), add a TOML file of
+**profiles** at `$XDG_CONFIG_HOME/zsh-ai/models.toml` (or point
+`zstyle ':zsh-ai:*' models_file <path>` at one):
+
+```toml
+# Values merged into every profile (override per-profile).
+[defaults]
+temperature = 0.2
+
+[models.fast]
+model      = "qwen2.5-coder:1.5b"
+max_tokens = 1024
+
+[models.smart]
+model = "qwen2.5-coder:7b-instruct"
+
+[models.cloud]
+model       = "gpt-4o-mini"
+endpoint    = "https://api.openai.com/v1"   # base URL — the bridge adds /chat/completions
+api_key_env = "OPENAI_API_KEY"
+
+# Default profile per widget (ask, modify, question, fim).
+[widgets]
+ask      = "smart"
+modify   = "smart"
+question = "smart"
+fim      = "fast"
+```
+
+A profile bundles the per-model bridge args: `model`, `endpoint`,
+`api_key` / `api_key_env`, `max_tokens`, `temperature`, `enable_thinking`,
+and (FIM) `stop`. See `models.toml.example` for the fully-annotated schema.
+
+**Overlay / precedence.** Each field a profile omits falls back — in order
+— to the TOML `[defaults]`, then your `:zsh-ai:*` zstyle, then the bridge's
+built-in default. So profiles list only what differs. The `default` profile
+has no TOML entry and resolves entirely from zstyle (your single-model
+config); define `[models.default]` to override it. With no models file at
+all, behaviour is exactly the single-model zstyle setup.
+
+**Switching at runtime:**
+
+```zsh
+# inside the scratchpad: Alt-M cycles the active profile (sticky for the session)
+zsh-ai-model            # list profiles, mark the active one
+zsh-ai-model smart      # set the active profile
+zsh-ai-model reset      # revert to the per-widget defaults
+zsh-ai --model cloud 'q'  # one-shot CLI override
+```
+
+**Picking the per-widget default** — a `profile` zstyle overrides the
+file's `[widgets]` map, so you can choose per machine (e.g. local vs cloud
+keyed on `$HOST`) without editing the file. Highest precedence first:
+
+```zsh
+zstyle ':zsh-ai:scratch' profile_ask <name>   # one widget
+zstyle ':zsh-ai:scratch' profile     <name>   # all of ask/modify/question
+zstyle ':zsh-ai:fim'     profile     <name>
+zstyle ':zsh-ai:*'       profile     <name>   # global
+```
+
+then `[widgets]`, then `default`. The TOML is parsed by `bin/zsh-ai-models`
+(Python's stdlib `tomllib` — no extra dependency) into a cache under
+`$XDG_CACHE_HOME/zsh-ai/`, regenerated when the file changes.
+
+### Themes
+
+Both the modal viewer (`bin/mdview`, Textual) and the inline markdown
+renderer (`bin/mdrender`, rich) can be themed from one knob:
+
+```zsh
+zstyle ':zsh-ai:view' theme tokyo-night
+```
+
+The name drives both renderers:
+
+- **mdview** via the `TEXTUAL_THEME` env var, set just for the spawned
+  viewer process (your shell's own `TEXTUAL_THEME` is never modified). Leave
+  the zstyle unset and mdview simply inherits your shell's `TEXTUAL_THEME`.
+- **mdrender** loads the matching `themes/<name>.ini` (a rich theme
+  generated from the same Textual palette), falling back to rich's defaults
+  if there's no such file.
+
+All of Textual's built-in theme names work — `tokyo-night`, `dracula`,
+`nord`, `gruvbox`, `catppuccin-*`, `solarized-dark`/`-light`, `monokai`,
+`rose-pine*`, `atom-one-dark`/`-light`, `ansi-dark`/`-light`, … Unset → each
+renderer uses its own default.
+
+The `themes/*.ini` files are generated from Textual's palettes by
+`themes/generate.py` (re-run after upgrading Textual). For a custom rich
+theme, edit a shipped `.ini` or set the value to your own file path (that
+themes mdrender; mdview falls back to its default unless the value is also a
+real Textual theme name):
+
+```zsh
+zstyle ':zsh-ai:view' theme ~/my-rich-theme.ini
+```
+
 How each mode behaves
 ---------------------
 
@@ -210,6 +315,10 @@ into BUFFER (no execution unless `accept_runs=yes`). `^G` re-rolls
 with the same instruction. `^X^X` edits the instruction without
 losing the candidates. `^Xv` reopens the thinking log. `esc` cancels
 and restores whatever you had typed before.
+
+If the bridge call fails (connection refused, bad model/endpoint, …),
+the error is shown inline in red instead of candidates — `^G` retries,
+`esc` cancels.
 
 ### `^Xm` — modify
 
@@ -261,15 +370,15 @@ CLI
 ---
 
 ```
-zsh-ai [--raw|--view] <question>     one-shot question
-zsh-ai -h | help                     usage
+zsh-ai [--raw|--view] [--model <name>] <question>   one-shot question
+zsh-ai -h | help                                    usage
 ```
 
 For shell-scripting and ad-hoc questions outside ZLE. Defaults to
 piping the answer through `bin/mdrender` for pretty markdown. `--raw`
 emits the bridge's raw stream; `--view` opens the answer in
-`bin/mdview` (scrollable modal). Reads `:zsh-ai:scratch` model and
-endpoint.
+`bin/mdview` (scrollable modal). `--model <name>` selects a profile
+(see Multiple models); otherwise it uses the `question`-widget default.
 
 ### `zsh-ai-run` — headless mode-specific invocation
 
@@ -300,11 +409,13 @@ Internal architecture
 - **Python bridge**: `bin/zsh-ai-llm` (Python + openai SDK) is the
   only thing that speaks HTTP. The zsh side spawns it as a subprocess
   and pipes content / thinking / status through fifos.
-- **Layout**: three Python submodules, each with its own bin/ shim:
+- **Layout**: Python under `src/zsh_ai/`, each piece with a thin bin/ shim:
   - `src/zsh_ai/llm/` — bridge (chat, complete, sinks, stream, status
     events) → `bin/zsh-ai-llm`
   - `src/zsh_ai/render/` — incremental markdown renderer → `bin/mdrender`
   - `src/zsh_ai/view/` — textual modal viewer → `bin/mdview`
+  - `src/zsh_ai/models.py` — TOML models file → cached zsh assignments
+    the plugin sources → `bin/zsh-ai-models`
 - **Scratchpad flow (ask/modify/question)**: synchronous around the
   foreground viewer. Widget spawns the bridge in a backgrounded
   subshell, animates a spinner via `zle -M` while waiting for the
@@ -334,6 +445,7 @@ Test override env vars (for debugging or test harnesses):
 | `ZSH_AI_BRIDGE_BIN`     | Substitute `bin/zsh-ai-llm` (e.g. with a mock)       |
 | `ZSH_AI_MDVIEW_BIN`     | Substitute `bin/mdview`                              |
 | `ZSH_AI_MDRENDER_BIN`   | Substitute `bin/mdrender`                            |
+| `ZSH_AI_MODELS_BIN`     | Substitute `bin/zsh-ai-models` (TOML → zsh codegen)  |
 
 Debug
 -----
