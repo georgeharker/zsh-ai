@@ -172,7 +172,7 @@ cycles the override for the **next** call only: `auto → on → off →
 auto`. Current state is shown in the instruction-line hint:
 
 ```
-       [enter: ask · esc: cancel · alt-t: thinking:on]
+       [enter: ask · esc: cancel · alt-t: thinking · thinking:on · alt-m: model]
 ```
 
 After the call fires, the override resets to `auto`.
@@ -186,8 +186,8 @@ zstyle ':zsh-ai:scratch' show_thinking yes   # default
 ```
 
 **`^Xv` — relaunch thinking** — after the bridge call completes the
-thinking is preserved to a temp log. From the candidate-select state
-(or the question answer), press `^Xv` to reopen it in the viewer.
+thinking is preserved to a temp log. From the candidate-select state,
+press `^Xv` to reopen it in the viewer.
 Useful when you want to scroll back through the model's reasoning
 after dismissing the live viewer.
 
@@ -319,7 +319,7 @@ Press `^Xa`. You get a blank instruction line above the prompt:
 
 ```
 ask │
-       [enter: ask · esc: cancel · alt-t: thinking]
+       [enter: ask · esc: cancel · alt-t: thinking · alt-m: model]
 ```
 
 Type a natural-language description, Enter. A spinner runs in the
@@ -356,7 +356,7 @@ Same UI as ask, but the current BUFFER is the **target** to rewrite:
 modify │ find . -name '*.py' -mtime -30
        ▷ exclude tests dirs
          ·
-         [enter: rewrite · esc: cancel]
+         [enter: rewrite · esc: cancel · alt-t: thinking · alt-m: model]
 ```
 
 Submit → the model gets both the original command and your

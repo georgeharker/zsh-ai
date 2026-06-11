@@ -1,1 +1,7 @@
 __pycache__/
+
+# Quarto site output
+/_site/
+/.quarto/
+**/*.quarto_ipynb
+_quarto-deploy.yml
