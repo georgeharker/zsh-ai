@@ -2,7 +2,7 @@
 name = "zsh-ai"
 version = "0.1.0"
 description = "OpenAI-compatible LLM integration for zsh — Python bridge"
-requires-python = ">=3.9"
+requires-python = ">=3.11"  # tomllib (models.py) is stdlib only from 3.11
 dependencies = [
     "openai>=1.0",
     "rich>=13.0",      # used by zsh-ai-render (one-shot markdown)
