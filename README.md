@@ -5,6 +5,10 @@ OpenAI-compatible LLM integration for zsh. Four keybind-driven
 workflows: ask for shell commands, modify what you've typed, ask
 freeform questions, and fill-in-the-middle at the cursor.
 
+> 📖 Rendered documentation:
+> [docs.georgeharker.com/zsh-ai](https://docs.georgeharker.com/zsh-ai/)
+> · [dev](https://docs.georgeharker.com/zsh-ai/dev/)
+
 | Keybind  | Mode      | What it does                                                       |
 |----------|-----------|--------------------------------------------------------------------|
 | `^Xa`    | ask       | Multi-line prompt → N candidate commands → Enter replaces BUFFER   |
