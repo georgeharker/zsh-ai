@@ -864,8 +864,8 @@ zsh-ai-model() {
 # Usage:
 #   zsh-ai-run [--no-render] <mode> <query> [target-for-modify]
 #
-# Default: pipes through the configured `formatter` (mdansi --stream by
-# default if installed). With --no-render: emits raw text from the
+# Default: pipes through bin/mdrender (override the binary with
+# ZSH_AI_MDRENDER_BIN). With --no-render: emits raw text from the
 # bridge (with <think>…</think> inlined when show_thinking=yes; dropped
 # when no).
 #

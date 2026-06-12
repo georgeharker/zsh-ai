@@ -5,7 +5,7 @@
 #   :zsh-ai:*       shared (endpoint, api_key / api_key_env, http_timeout,
 #                   models_file — path to a TOML multi-model config)
 #   :zsh-ai:scratch ^Xa ask, ^Xm modify, ^Xq question — model, max_tokens,
-#                   temperature, candidates, keybinds, formatter, streaming,
+#                   temperature, candidates, keybinds, streaming,
 #                   thinking display, system-prompt overrides
 #   :zsh-ai:fim     ^Xi fill-in-the-middle — model, max_tokens, keybind,
 #                   stop_tokens, optional template tokens
@@ -31,7 +31,6 @@
 #   zstyle ':zsh-ai:scratch' enabled         yes
 #   zstyle ':zsh-ai:scratch' model           'qwen2.5-coder:7b-instruct'
 #   zstyle ':zsh-ai:scratch' candidates      3
-#   zstyle ':zsh-ai:scratch' formatter       'glow -'   # default if glow installed
 #   zstyle ':zsh-ai:scratch' stream_question yes        # default no
 #
 #   zstyle ':zsh-ai:fim'     enabled         yes
