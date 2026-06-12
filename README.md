@@ -1,5 +1,4 @@
-zsh-ai
-======
+# zsh-ai
 
 OpenAI-compatible LLM integration for zsh. Four keybind-driven
 workflows: ask for shell commands, modify what you've typed, ask
@@ -24,8 +23,7 @@ Backend is any OpenAI-compatible HTTP endpoint — llama.cpp's
 the model itself is out of scope; this plugin only talks to one you've
 already brought up.
 
-Requirements
-------------
+## Requirements
 
 - `zsh` 5.x+
 - [`uv`](https://docs.astral.sh/uv/) and `python` 3.11+ — for the LLM
@@ -33,8 +31,7 @@ Requirements
   TOML models parser (stdlib `tomllib`). `uv sync` provisions the pinned
   Python automatically, so you generally just need `uv`.
 
-Install
--------
+## Install
 
 ```zsh
 # In the plugin directory, once:
@@ -56,8 +53,7 @@ Optional, for the one-shot CLI launcher:
 export PATH="/path/to/zsh-ai/bin:$PATH"
 ```
 
-Configuration
--------------
+## Configuration
 
 All configuration is via `zstyle`. Set values **before** sourcing the
 plugin — keybinds and widget setup read zstyle at source time.
@@ -314,8 +310,7 @@ real Textual theme name):
 zstyle ':zsh-ai:view' theme ~/my-rich-theme.ini
 ```
 
-How each mode behaves
----------------------
+## How each mode behaves
 
 ### `^Xa` — ask
 
@@ -398,8 +393,7 @@ cursor. Async (spinner runs in POSTDISPLAY) so the rest of the prompt
 stays interactive while you wait. See `lib/fim.zsh` for the
 FIM-token templating details.
 
-CLI
----
+## CLI
 
 ```
 zsh-ai [--raw|--view] [--model <name>] <question>   one-shot question
@@ -435,8 +429,7 @@ For one-off debugging of the HTTP request:
 ./bin/zsh-ai-llm complete --model qwen-coder --prompt 'def foo(' --max-tokens 60
 ```
 
-Internal architecture
----------------------
+## Internal architecture
 
 - **Python bridge**: `bin/zsh-ai-llm` (Python + openai SDK) is the
   only thing that speaks HTTP. The zsh side spawns it as a subprocess
@@ -479,8 +472,7 @@ Test override env vars (for debugging or test harnesses):
 | `ZSH_AI_MDRENDER_BIN`   | Substitute `bin/mdrender`                            |
 | `ZSH_AI_MODELS_BIN`     | Substitute `bin/zsh-ai-models` (TOML → zsh codegen)  |
 
-Debug
------
+## Debug
 
 ```zsh
 export ZSH_AI_DEBUG=1
@@ -491,7 +483,6 @@ tail -f /tmp/zsh-ai.log
 
 Credit to Geoff Miller for the idea.
 
-License
--------
+## License
 
 MIT

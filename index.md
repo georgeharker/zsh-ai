@@ -10,8 +10,10 @@ Everything lives in the [overview and reference (README)](README.md):
 
 | I want to… | Section |
 |------------|---------|
-| Install the plugin and see each keybind | [Overview (README)](README.md) |
+| Install the plugin | [Install](README.md#install) |
+| See each keybind and mode | [How each mode behaves](README.md#how-each-mode-behaves) |
 | Get a minimal working config | [Configuration TL;DR](README.md#tldr) |
+| Use the one-shot CLI | [CLI](README.md#cli) |
 | Tune thinking/reasoning models | [Reasoning models](README.md#reasoning-models-qwen3-deepseek-r1-etc) |
 | Switch between several models | [Multiple models (profiles)](README.md#multiple-models-profiles) |
 | Theme the viewer and renderer | [Themes](README.md#themes) |
