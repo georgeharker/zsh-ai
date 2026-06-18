@@ -17,6 +17,15 @@ class CompleteArgs(CommonArgs):
 
 
 def cmd_complete(args: CompleteArgs) -> int:
+    provider = args.get("provider", "openai")
+    if provider != "openai":
+        print(
+            f"zsh-ai-llm: FIM (complete) supports only the openai provider, "
+            f"not '{provider}'. Set the fim profile/zstyle provider to openai.",
+            file=sys.stderr,
+        )
+        return 2
+
     client = build_client(args)
 
     # See chat.py for the rationale on the Any annotation.

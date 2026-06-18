@@ -734,6 +734,41 @@ _zsh_ai_scratch_cancel() {
     return 0
 }
 
+# Smart Escape — bound to a BARE \e so a single Esc cancels the scratchpad.
+# A bare \e is also the first byte of every escape SEQUENCE we bind (arrows
+# \e[A/\eOB, Alt-T \et, Alt-M \em, double-Esc \e\e). ZLE normally
+# disambiguates lone-Esc from a sequence by waiting KEYTIMEOUT for the next
+# byte — but under a tiny KEYTIMEOUT (common in vi-mode) it fires too early
+# and the rest of the sequence ("[B") leaks into the buffer (see
+# tests/test_p04). So we do the disambiguation ourselves: peek for a
+# continuation byte with our own short timeout (independent of KEYTIMEOUT),
+# re-dispatching recognised sequences to their widgets and treating a true
+# lone Esc as cancel. The buffered/fast case still matches the longer
+# bindkey entries directly and never reaches this widget.
+_zsh_ai_scratch_escape() {
+    local k
+    if ! read -t 0.3 -k k 2>/dev/null; then
+        zle _zsh_ai_scratch_cancel        # lone Esc → cancel
+        return
+    fi
+    case "$k" in
+        $'\e') zle _zsh_ai_scratch_cancel ;;            # Esc Esc
+        t)     zle _zsh_ai_scratch_thinking_toggle ;;   # Alt-T
+        m)     zle _zsh_ai_scratch_model_cycle ;;       # Alt-M
+        '['|O)                                          # CSI/SS3 → arrow
+            local k2
+            if read -t 0.3 -k k2 2>/dev/null; then
+                case "$k2" in
+                    A|Z) zle _zsh_ai_scratch_up ;;
+                    B)   zle _zsh_ai_scratch_down ;;
+                esac
+            fi
+            ;;
+        *) zle -U -- "$k" ;;   # not one of ours — requeue so it's not eaten
+    esac
+    return 0
+}
+
 # Optional debug logging — set ZSH_AI_DEBUG=1 (and optionally
 # ZSH_AI_DEBUG_LOG=/path/file, defaults to $_ZSH_AI_TMPDIR/debug.log
 # alongside the other runtime tempfiles).
@@ -936,6 +971,7 @@ _zsh_ai_scratch_register() {
     zle -N _zsh_ai_scratch_edit_instruction
     zle -N _zsh_ai_scratch_accept
     zle -N _zsh_ai_scratch_cancel
+    zle -N _zsh_ai_scratch_escape
 
     # `bindkey -N` deletes any existing keymap of the same name before
     # creating the new one — idempotent on re-source, no error suppression.
@@ -953,11 +989,14 @@ _zsh_ai_scratch_register() {
     # Alt-M cycles the active model profile (\em = ESC-prefix Alt-M).
     bindkey -M zsh-ai-scratch $'\em' _zsh_ai_scratch_model_cycle
 
-    # Cancel: bare \e is unsafe — it's a PREFIX for arrow keys (\e[A etc.).
-    # Use \e\e (double-Esc) so both chars are known and ZLE waits
-    # unambiguously regardless of KEYTIMEOUT.
+    # Cancel. Bare \e is a PREFIX for arrow keys (\e[A etc.), so we route
+    # it through _zsh_ai_scratch_escape, which disambiguates a lone Esc
+    # (→ cancel) from a sequence with its own timed peek — see that widget
+    # for why this beats KEYTIMEOUT alone. \e\e (double-Esc) and ^C stay
+    # bound directly as the unambiguous, fast-path cancels.
     bindkey -M zsh-ai-scratch '^C'    _zsh_ai_scratch_cancel
     bindkey -M zsh-ai-scratch $'\e\e' _zsh_ai_scratch_cancel
+    bindkey -M zsh-ai-scratch $'\e'   _zsh_ai_scratch_escape
 
     # Arrow keys — terminals send different escape sequences depending on
     # mode (normal vs application keypad), TERM, and which terminal emulator.

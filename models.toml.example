@@ -42,6 +42,16 @@ endpoint    = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"    # name of the env var holding the key
                                   # (use api_key = "..." for an inline key)
 
+# `provider = "claude_code"` routes chat/question through the Claude Agent
+# SDK instead of an OpenAI-compatible endpoint — it reuses the `claude`
+# CLI's auth (your subscription login or ANTHROPIC_API_KEY), so no
+# endpoint/api_key here. Needs the SDK + CLI: `uv sync --extra claude` and
+# the `claude` command on PATH. Chat-only — FIM (^Xi) stays on openai.
+[models.claude]
+provider = "claude_code"
+model    = "claude-sonnet-4-6"    # any id/alias the `claude` CLI accepts
+# enable_thinking = true          # honoured via the SDK's thinking budget
+
 # Default profile per widget. Omitted widgets fall back to `default`
 # (the zstyle config). Keys: ask, modify, question, fim.
 #

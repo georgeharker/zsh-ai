@@ -9,6 +9,14 @@ dependencies = [
     "textual>=0.50",   # used by zsh-ai-view (scrollable modal)
 ]
 
+# Optional `claude_code` chat backend: the Claude Agent SDK routes
+# chat/question through the `claude` CLI's auth instead of an OpenAI
+# endpoint. Off by default (also needs the `claude` CLI installed);
+# enable with `uv sync --extra claude`. Imported lazily so the default
+# openai path never requires it.
+[project.optional-dependencies]
+claude = ["claude-agent-sdk>=0.2"]
+
 # `uv sync` installs this package (editable) into .venv/ along with
 # openai. We do NOT declare a [project.scripts] entry — the auto-
 # generated console-script wrapper carries Windows-launcher cruft we

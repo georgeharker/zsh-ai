@@ -241,9 +241,10 @@ question = "smart"
 fim      = "fast"
 ```
 
-A profile bundles the per-model bridge args: `model`, `endpoint`,
-`api_key` / `api_key_env`, `max_tokens`, `temperature`, `enable_thinking`,
-and (FIM) `stop`. See `models.toml.example` for the fully-annotated schema.
+A profile bundles the per-model bridge args: `provider`, `model`,
+`endpoint`, `api_key` / `api_key_env`, `max_tokens`, `temperature`,
+`enable_thinking`, and (FIM) `stop`. See `models.toml.example` for the
+fully-annotated schema.
 
 **Overlay / precedence.** Each field a profile omits falls back — in order
 — to the TOML `[defaults]`, then your `:zsh-ai:*` zstyle, then the bridge's
@@ -276,6 +277,54 @@ zstyle ':zsh-ai:*'       profile     <name>   # global
 then `[widgets]`, then `default`. The TOML is parsed by `bin/zsh-ai-models`
 (Python's stdlib `tomllib` — no extra dependency) into a cache under
 `$XDG_CACHE_HOME/zsh-ai/`, regenerated when the file changes.
+
+### Claude Code backend (`provider = "claude_code"`)
+
+By default every request goes to an OpenAI-compatible endpoint. The
+chat-style modes (`^Xa` ask, `^Xm` modify, `^Xq` question) can instead be
+routed through the **Claude Agent SDK**, which reuses the `claude` CLI's
+own auth — your Claude subscription login or `ANTHROPIC_API_KEY` — so
+there's no endpoint or API key to configure. It runs as a plain
+single-turn chat (all tools disabled; no file or shell access).
+
+Two prerequisites, both optional for everyone else:
+
+```zsh
+uv sync --extra claude     # install the SDK into the plugin venv
+# and the `claude` CLI must be on PATH (you likely already have it)
+```
+
+Select it per profile or globally. The `model` is any id/alias the
+`claude` CLI accepts (`claude-sonnet-4-6`, `sonnet`, …):
+
+```toml
+# models.toml
+[models.claude]
+provider = "claude_code"
+model    = "claude-sonnet-4-6"
+```
+
+```zsh
+# …or without a models file, flip a whole context over via zstyle:
+zstyle ':zsh-ai:scratch' provider claude_code
+zstyle ':zsh-ai:scratch' model    claude-sonnet-4-6
+```
+
+`provider` follows the same per-feature → `:zsh-ai:*` fallback as
+`endpoint`/`api_key`, and a TOML profile's `provider` wins over both.
+**FIM (`^Xi`) is openai-only** — keep its profile on the default provider.
+With `claude_code`, `endpoint`/`api_key`/`max_tokens`/`temperature` are
+ignored (the `claude` CLI governs them); `model`, the system prompt, and
+`enable_thinking` carry over.
+
+**Thinking on this backend.** `enable_thinking` maps to the SDK's thinking
+config: `false` → off, `true` → on with a budget cap, `auto` → *adaptive*
+(the model scales thinking to the question — a good default). Two things
+differ from a local reasoning model: Claude Code returns **summarised**
+thinking (there's no raw `<think>` dump to stream), so it's terser; and the
+budget is a **cap, not a floor** — a hard prompt thinks more, an easy one
+stays short regardless. It does stream token-by-token. Raise the `true`
+budget (default 8192, ≥1024) with `export ZSH_AI_CLAUDE_THINKING_BUDGET=…`.
 
 ### Themes
 

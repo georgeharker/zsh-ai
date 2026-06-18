@@ -19,6 +19,7 @@ from typing import Any, Dict
 
 _SCALARS = (
     "model",
+    "provider",
     "endpoint",
     "api_key",
     "api_key_env",

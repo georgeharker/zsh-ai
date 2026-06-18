@@ -144,7 +144,10 @@ _zsh_ai_render_theme_args() {
 
 # ── Multi-model profiles ─────────────────────────────────────────────────────
 # A "profile" bundles every model part the bridge takes as a flag
-# (model, endpoint, api key, max_tokens, temperature, enable_thinking).
+# (provider, model, endpoint, api key, max_tokens, temperature,
+# enable_thinking). `provider` selects the backend: `openai` (default,
+# OpenAI-compatible endpoint) or `claude_code` (Claude Agent SDK — chat
+# modes only; ignores endpoint/api_key and uses the `claude` CLI's auth).
 # The zstyle config IS the `default` profile, resolved per feature. A TOML
 # models file (`zstyle ':zsh-ai:*' models_file`, else
 # $XDG_CONFIG_HOME/zsh-ai/models.toml) adds named overlay profiles, parsed
@@ -251,7 +254,7 @@ _zsh_ai_model_args() {
     local is_json=0
     [[ -n "${_ZSH_AI_PROFILE_FIELDS[${name}:model]+x}" ]] && is_json=1
 
-    local jmodel="" jmax="" jtemp="" jep="" jake="" jak="" jth=""
+    local jmodel="" jmax="" jtemp="" jep="" jake="" jak="" jth="" jprov=""
     if (( is_json )); then
         jmodel="${_ZSH_AI_PROFILE_FIELDS[${name}:model]-}"
         jmax="${_ZSH_AI_PROFILE_FIELDS[${name}:max_tokens]-}"
@@ -260,11 +263,16 @@ _zsh_ai_model_args() {
         jake="${_ZSH_AI_PROFILE_FIELDS[${name}:api_key_env]-}"
         jak="${_ZSH_AI_PROFILE_FIELDS[${name}:api_key]-}"
         jth="${_ZSH_AI_PROFILE_FIELDS[${name}:enable_thinking]-}"
+        jprov="${_ZSH_AI_PROFILE_FIELDS[${name}:provider]-}"
     fi
 
     local -a a
     local model="${jmodel:-$(_zsh_ai_cfg "$ctx" model '')}"
     [[ -n "$model" ]] && a+=(--model "$model")
+    # Backend selector. `claude_code` routes chat through the Claude Agent
+    # SDK (endpoint/api-key below are ignored by that path); `openai`
+    # (default) uses the OpenAI-compatible endpoint. FIM is openai-only.
+    a+=(--provider "${jprov:-$(_zsh_ai_resolve provider 'openai')}")
     a+=(--max-tokens "${jmax:-$(_zsh_ai_cfg "$ctx" max_tokens "$def_max")}")
     a+=(--temperature "${jtemp:-$(_zsh_ai_cfg "$ctx" temperature "$def_temp")}")
     a+=(--endpoint "${jep:-$(_zsh_ai_resolve endpoint 'http://localhost:11434/v1')}")

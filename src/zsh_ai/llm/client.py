@@ -26,6 +26,7 @@ class CommonArgs(BridgeArgs):
     model: str
     max_tokens: int
     temperature: float
+    provider: str
 
 
 def build_client(args: BridgeArgs) -> Any:

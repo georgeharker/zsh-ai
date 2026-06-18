@@ -1,5 +1,9 @@
 __pycache__/
 
+# Resolved by `uv sync` per machine — not tracked (plugin, not a deployed
+# app), so the optional claude-agent-sdk closure doesn't churn the repo.
+uv.lock
+
 # Quarto site output
 /_site/
 /.quarto/
