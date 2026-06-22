@@ -40,7 +40,7 @@ _zsh_ai_scratch_question_stream() {
     local _zsh_ai_thinking_forced="$_zsh_ai_scratch_thinking_override"
     _zsh_ai_scratch_thinking_override=""
     local -a margs
-    if ! _zsh_ai_model_args question "$(_zsh_ai_current_profile question)" margs; then
+    if ! _zsh_ai_model_args question "$(_zsh_ai_current_provider question)" margs; then
         zle -I
         print -ru2 -- "zsh-ai: no model — set zstyle ':zsh-ai:scratch' model <name> or a models file"
         [[ -n "$saved_buf" ]] && print -z -- "$saved_buf"

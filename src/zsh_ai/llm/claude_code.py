@@ -6,10 +6,10 @@ single turn, so it behaves like an ordinary chat completion (no file or
 shell access). Authentication piggybacks on the Claude Code CLI — the
 user's existing `claude` login (subscription) or ``ANTHROPIC_API_KEY``,
 exactly as the CLI resolves it. There is no FIM equivalent, so the
-``complete`` subcommand rejects this provider.
+``complete`` subcommand rejects this adapter.
 
-The SDK is an OPTIONAL dependency, imported here so the default openai
-path never requires it. The module exposes a single synchronous
+The SDK is an OPTIONAL dependency, imported here so the default
+openai-compatible path never requires it. The module exposes a single synchronous
 producer, :func:`stream_claude_code`, matching the ``Producer`` shape in
 :mod:`zsh_ai.llm.chat`; it owns the asyncio bridge internally and pumps
 ``text_delta`` / ``thinking_delta`` events into the shared emitter.
@@ -36,7 +36,7 @@ def _require_sdk() -> Any:
         import claude_agent_sdk as sdk  # type: ignore[import-not-found]
     except ImportError:
         print(
-            "zsh-ai-llm: the claude_code provider needs the Claude Agent "
+            "zsh-ai-llm: the claude_code adapter needs the Claude Agent "
             "SDK. Install it with `uv sync --extra claude` (or "
             "`pip install claude-agent-sdk`) in the plugin directory, and "
             "make sure the `claude` CLI is on PATH.",

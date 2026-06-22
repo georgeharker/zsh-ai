@@ -17,11 +17,12 @@ class CompleteArgs(CommonArgs):
 
 
 def cmd_complete(args: CompleteArgs) -> int:
-    provider = args.get("provider", "openai")
-    if provider != "openai":
+    adapter = args.get("adapter", "openai-compatible")
+    if adapter != "openai-compatible":
         print(
-            f"zsh-ai-llm: FIM (complete) supports only the openai provider, "
-            f"not '{provider}'. Set the fim profile/zstyle provider to openai.",
+            f"zsh-ai-llm: FIM (complete) supports only the openai-compatible "
+            f"adapter, not '{adapter}'. Point the fim provider/zstyle at an "
+            f"openai-compatible backend.",
             file=sys.stderr,
         )
         return 2

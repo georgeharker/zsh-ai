@@ -60,11 +60,11 @@ _zsh_ai_fim_build_request() {
 # profile-aware makes both profile-aware.
 _zsh_ai_fim_stops() {
     reply=()
-    # Profile `stop` is emitted by bin/zsh-ai-models as a US-joined (0x1f)
+    # Provider `stop` is emitted by bin/zsh-ai-models as a US-joined (0x1f)
     # value, since zsh assoc values are flat strings — split it back.
-    local profile="$(_zsh_ai_current_profile fim)"
+    local provider="$(_zsh_ai_current_provider fim)"
     _zsh_ai_models_load >/dev/null 2>&1
-    local pstop="${_ZSH_AI_PROFILE_FIELDS[${profile}:stop]-}"
+    local pstop="${_ZSH_AI_PROVIDER_FIELDS[${provider}:stop]-}"
     if [[ -n "$pstop" ]]; then
         reply=( "${(@ps:\x1f:)pstop}" )
         return 0
@@ -110,7 +110,7 @@ _zsh_ai_fim_insert() {
     local _zsh_ai_ctx=':zsh-ai:fim'
 
     local -a margs
-    if ! _zsh_ai_model_args fim "$(_zsh_ai_current_profile fim)" margs; then
+    if ! _zsh_ai_model_args fim "$(_zsh_ai_current_provider fim)" margs; then
         zle -M "zsh-ai: configure model with  zstyle ':zsh-ai:fim' model <name> (or a models file)"
         return 0
     fi

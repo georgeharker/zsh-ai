@@ -142,33 +142,37 @@ _zsh_ai_render_theme_args() {
     set -A "$out_var" "${_rt_args[@]}"
 }
 
-# ── Multi-model profiles ─────────────────────────────────────────────────────
-# A "profile" bundles every model part the bridge takes as a flag
-# (provider, model, endpoint, api key, max_tokens, temperature,
-# enable_thinking). `provider` selects the backend: `openai` (default,
-# OpenAI-compatible endpoint) or `claude_code` (Claude Agent SDK — chat
-# modes only; ignores endpoint/api_key and uses the `claude` CLI's auth).
-# The zstyle config IS the `default` profile, resolved per feature. A TOML
-# models file (`zstyle ':zsh-ai:*' models_file`, else
-# $XDG_CONFIG_HOME/zsh-ai/models.toml) adds named overlay profiles, parsed
-# by bin/zsh-ai-models (Python — no jq) into a cached zsh file we source.
+# ── Providers & profiles ─────────────────────────────────────────────────────
+# A "provider" bundles every backend part the bridge takes as a flag: an
+# `adapter` (transport — `openai-compatible`, an HTTP endpoint, or
+# `claude_code`, the Claude Agent SDK — chat modes only; ignores endpoint/
+# api_key and uses the `claude` CLI's auth), plus model, endpoint, api key,
+# max_tokens, temperature, enable_thinking. The zstyle config IS the `default`
+# provider, resolved per feature. A TOML models file (`zstyle ':zsh-ai:*'
+# models_file`, else $XDG_CONFIG_HOME/zsh-ai/models.toml) adds named
+# `[providers.<name>]` overlays, parsed by bin/zsh-ai-models (Python — no jq)
+# into a cached zsh file we source. Switch the live provider with Alt-M /
+# `zsh-ai-provider <name>`.
 #
-# Per field the precedence is: TOML profile → TOML [defaults] → `:zsh-ai:*`
-# zstyle → the bridge's own default. So profiles only specify what differs,
-# and with no models file behaviour is exactly today's single-model zstyle.
+# Per field the precedence is: TOML provider → TOML [defaults] → `:zsh-ai:*`
+# zstyle → the bridge's own default. So providers only specify what differs,
+# and with no models file behaviour is exactly today's single-backend zstyle.
 #
-# WHICH profile each widget defaults to is a separate axis (see
-# _zsh_ai_default_profile): a `profile` zstyle selector overrides the file's
-# [widgets] map, so you can pick the default per machine (e.g. local vs cloud
-# keyed on $HOST) without editing the file —
-#   zstyle ':zsh-ai:scratch' profile      cloud   # ask/modify/question
-#   zstyle ':zsh-ai:scratch' profile_ask  local   # just ask
-#   zstyle ':zsh-ai:fim'     profile      local
-#   zstyle ':zsh-ai:*'       profile      cloud   # global default
+# WHICH provider each widget uses is a separate axis (see
+# _zsh_ai_default_provider): an explicit `provider` zstyle pins it; otherwise
+# the active *profile* — a `[profiles.<name>]` widget→provider map chosen at
+# startup via a `profile` zstyle — supplies it. The profile is how you pick a
+# whole set per machine (e.g. local vs cloud keyed on $HOST) without editing
+# the file:
+#   zstyle ':zsh-ai:*'       profile  cloud   # all widgets
+#   zstyle ':zsh-ai:scratch' profile  cloud   # just ask/modify/question
+#   zstyle ':zsh-ai:fim'     profile  local
+#   zstyle ':zsh-ai:scratch' provider claude  # pin one provider, ignore profile
+typeset -ga _ZSH_AI_PROVIDERS=()
 typeset -ga _ZSH_AI_PROFILES=()
-typeset -gA _ZSH_AI_WIDGETS=()
-typeset -gA _ZSH_AI_PROFILE_FIELDS=()
-typeset -g  _zsh_ai_active_profile=""   # "" = use the widget's default
+typeset -gA _ZSH_AI_PROFILE_WIDGETS=()
+typeset -gA _ZSH_AI_PROVIDER_FIELDS=()
+typeset -g  _zsh_ai_active_provider=""   # "" = use the widget's default
 
 # Path to the TOML models file, or nothing if none exists.
 _zsh_ai_models_file() {
@@ -199,43 +203,57 @@ _zsh_ai_models_load() {
     return 0
 }
 
-# Profile names: `default` plus any from the models file (a TOML-defined
+# Provider names: `default` plus any from the models file (a TOML-defined
 # `default` folds onto the builtin one via dedup).
-_zsh_ai_profiles() {
+_zsh_ai_providers() {
     local -a names=(default)
-    _zsh_ai_models_load && names+=("${_ZSH_AI_PROFILES[@]}")
+    _zsh_ai_models_load && names+=("${_ZSH_AI_PROVIDERS[@]}")
     print -rl -- "${(@u)names}"
 }
 
-# Per-widget default profile. Resolution, highest first:
-#   1. zstyle `:zsh-ai:<ctx>` profile_<feature>   (per-widget override)
-#   2. zstyle `:zsh-ai:<ctx>` profile             (per-context: all scratch / fim)
-#   3. zstyle `:zsh-ai:*`     profile             (global)
-#   4. the models-file [widgets] map
-#   5. `default` (the zstyle single-model config)
+# The active profile (machine "section") for <ctx>: a `[profiles.<name>]`
+# widget→provider map chosen at startup. zstyle `:zsh-ai:<ctx>` profile →
+# `:zsh-ai:*` profile. Empty if none set (then the `default` provider applies).
+_zsh_ai_active_profile() {
+    local ctx="$1" p
+    p="$(_zsh_ai_cfg "$ctx" profile '')"
+    [[ -z "$p" ]] && p="$(_zsh_ai_cfg ':zsh-ai:*' profile '')"
+    print -r -- "$p"
+}
+
+# Per-widget default provider. Resolution, highest first:
+#   1. zstyle `:zsh-ai:<ctx>` provider_<feature>   (per-widget pin)
+#   2. zstyle `:zsh-ai:<ctx>` provider             (per-context: all scratch / fim)
+#   3. zstyle `:zsh-ai:*`     provider             (global pin)
+#   4. the active profile's [profiles.<name>] widget→provider map
+#   5. `default` (the zstyle single-backend config)
 # ctx is :zsh-ai:scratch for ask/modify/question, :zsh-ai:fim for fim. The
-# zstyle selectors let you pick the default per machine (e.g. local vs cloud
-# keyed on $HOST in an ai-configure hook) without editing the models file.
-_zsh_ai_default_profile() {
+# explicit `provider` zstyles let you pin per machine; the `profile` zstyle
+# (step 4) picks a whole widget→provider set at once.
+_zsh_ai_default_provider() {
     local feature="$1"
     local ctx=':zsh-ai:scratch'; [[ "$feature" == fim ]] && ctx=':zsh-ai:fim'
     local p
-    p="$(_zsh_ai_cfg "$ctx" "profile_${feature}" '')"
-    [[ -z "$p" ]] && p="$(_zsh_ai_cfg "$ctx" profile '')"
-    [[ -z "$p" ]] && p="$(_zsh_ai_cfg ':zsh-ai:*' profile '')"
-    [[ -z "$p" ]] && { _zsh_ai_models_load && p="${_ZSH_AI_WIDGETS[$feature]-}"; }
+    p="$(_zsh_ai_cfg "$ctx" "provider_${feature}" '')"
+    [[ -z "$p" ]] && p="$(_zsh_ai_cfg "$ctx" provider '')"
+    [[ -z "$p" ]] && p="$(_zsh_ai_cfg ':zsh-ai:*' provider '')"
+    if [[ -z "$p" ]]; then
+        local prof="$(_zsh_ai_active_profile "$ctx")"
+        [[ -n "$prof" ]] && { _zsh_ai_models_load && p="${_ZSH_AI_PROFILE_WIDGETS[${prof}:${feature}]-}"; }
+    fi
     print -r -- "${p:-default}"
 }
 
-# Active profile for <feature>: the session override if set, else default.
-_zsh_ai_current_profile() {
-    print -r -- "${_zsh_ai_active_profile:-$(_zsh_ai_default_profile "$1")}"
+# Active provider for <feature>: the session override (Alt-M) if set, else
+# the per-widget default.
+_zsh_ai_current_provider() {
+    print -r -- "${_zsh_ai_active_provider:-$(_zsh_ai_default_provider "$1")}"
 }
 
-# Build the bridge model-flag array for <feature> using profile <name>
-# into the array named by <out>. A TOML profile's fields overlay the
+# Build the bridge model-flag array for <feature> using provider <name>
+# into the array named by <out>. A TOML provider's fields overlay the
 # per-feature zstyle base; absent fields fall back to zstyle then the
-# bridge default. Profile `default` (with no TOML override) resolves
+# bridge default. Provider `default` (with no TOML override) resolves
 # entirely from the existing per-feature zstyle — today's behaviour.
 # Returns 0 if a model was resolved, 1 if none (caller should report).
 _zsh_ai_model_args() {
@@ -252,27 +270,27 @@ _zsh_ai_model_args() {
 
     _zsh_ai_models_load >/dev/null 2>&1   # populate the assocs if a file exists
     local is_json=0
-    [[ -n "${_ZSH_AI_PROFILE_FIELDS[${name}:model]+x}" ]] && is_json=1
+    [[ -n "${_ZSH_AI_PROVIDER_FIELDS[${name}:model]+x}" ]] && is_json=1
 
-    local jmodel="" jmax="" jtemp="" jep="" jake="" jak="" jth="" jprov=""
+    local jmodel="" jmax="" jtemp="" jep="" jake="" jak="" jth="" jadapter=""
     if (( is_json )); then
-        jmodel="${_ZSH_AI_PROFILE_FIELDS[${name}:model]-}"
-        jmax="${_ZSH_AI_PROFILE_FIELDS[${name}:max_tokens]-}"
-        jtemp="${_ZSH_AI_PROFILE_FIELDS[${name}:temperature]-}"
-        jep="${_ZSH_AI_PROFILE_FIELDS[${name}:endpoint]-}"
-        jake="${_ZSH_AI_PROFILE_FIELDS[${name}:api_key_env]-}"
-        jak="${_ZSH_AI_PROFILE_FIELDS[${name}:api_key]-}"
-        jth="${_ZSH_AI_PROFILE_FIELDS[${name}:enable_thinking]-}"
-        jprov="${_ZSH_AI_PROFILE_FIELDS[${name}:provider]-}"
+        jmodel="${_ZSH_AI_PROVIDER_FIELDS[${name}:model]-}"
+        jmax="${_ZSH_AI_PROVIDER_FIELDS[${name}:max_tokens]-}"
+        jtemp="${_ZSH_AI_PROVIDER_FIELDS[${name}:temperature]-}"
+        jep="${_ZSH_AI_PROVIDER_FIELDS[${name}:endpoint]-}"
+        jake="${_ZSH_AI_PROVIDER_FIELDS[${name}:api_key_env]-}"
+        jak="${_ZSH_AI_PROVIDER_FIELDS[${name}:api_key]-}"
+        jth="${_ZSH_AI_PROVIDER_FIELDS[${name}:enable_thinking]-}"
+        jadapter="${_ZSH_AI_PROVIDER_FIELDS[${name}:adapter]-}"
     fi
 
     local -a a
     local model="${jmodel:-$(_zsh_ai_cfg "$ctx" model '')}"
     [[ -n "$model" ]] && a+=(--model "$model")
-    # Backend selector. `claude_code` routes chat through the Claude Agent
-    # SDK (endpoint/api-key below are ignored by that path); `openai`
-    # (default) uses the OpenAI-compatible endpoint. FIM is openai-only.
-    a+=(--provider "${jprov:-$(_zsh_ai_resolve provider 'openai')}")
+    # Transport adapter. `claude_code` routes chat through the Claude Agent
+    # SDK (endpoint/api-key below are ignored by that path); `openai-compatible`
+    # (default) uses the HTTP endpoint. FIM is openai-compatible-only.
+    a+=(--adapter "${jadapter:-$(_zsh_ai_resolve adapter 'openai-compatible')}")
     a+=(--max-tokens "${jmax:-$(_zsh_ai_cfg "$ctx" max_tokens "$def_max")}")
     a+=(--temperature "${jtemp:-$(_zsh_ai_cfg "$ctx" temperature "$def_temp")}")
     a+=(--endpoint "${jep:-$(_zsh_ai_resolve endpoint 'http://localhost:11434/v1')}")
