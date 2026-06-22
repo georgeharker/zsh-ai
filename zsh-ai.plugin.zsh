@@ -47,13 +47,13 @@ source "$_ZSH_AI_DIR/lib/fim.zsh"
 # (unrendered) output, pass --raw. For interactive widgets, use
 # ^Xa / ^Xm / ^Xq from any prompt.
 zsh-ai() {
-    local raw=0 view=0 profile=""
+    local raw=0 view=0 provider=""
     while [[ "$1" == --* ]]; do
         case "$1" in
-            --raw)   raw=1; shift ;;
-            --view)  view=1; shift ;;
-            --model) profile="$2"; shift 2 ;;
-            --)      shift; break ;;
+            --raw)      raw=1; shift ;;
+            --view)     view=1; shift ;;
+            --provider) provider="$2"; shift 2 ;;
+            --)         shift; break ;;
             *) print -ru2 -- "zsh-ai: unknown option $1"; return 2 ;;
         esac
     done
@@ -61,12 +61,12 @@ zsh-ai() {
         ""|-h|--help|help)
             cat <<'EOF'
 Usage:
-  zsh-ai [--raw|--view] [--model <name>] <question>
+  zsh-ai [--raw|--view] [--provider <name>] <question>
         ask a one-shot question
-          (default)     pretty-print the answer via bin/mdrender
-          --raw         stream raw bridge output to stdout (no rendering)
-          --view        open the answer in bin/mdview (scrollable modal)
-          --model NAME  use a named model profile (see models.toml)
+          (default)       pretty-print the answer via bin/mdrender
+          --raw           stream raw bridge output to stdout (no rendering)
+          --view          open the answer in bin/mdview (scrollable modal)
+          --provider NAME use a named provider (see models.toml)
   zsh-ai -h | help    this message
 
 Interactively in zsh:
@@ -79,10 +79,10 @@ EOF
             ;;
     esac
 
-    [[ -z "$profile" ]] && profile="$(_zsh_ai_current_profile question)"
+    [[ -z "$provider" ]] && provider="$(_zsh_ai_current_provider question)"
     local _zsh_ai_ctx=':zsh-ai:scratch'
     local -a margs   # shuck: ignore=C001   # passed by name to _zsh_ai_chat (${(@P)})
-    if ! _zsh_ai_model_args question "$profile" margs; then
+    if ! _zsh_ai_model_args question "$provider" margs; then
         print -P "%F{red}zsh-ai: no model configured%f" >&2
         print "  zstyle ':zsh-ai:scratch' model 'your-model'  (or set up a models file)" >&2
         return 1

@@ -31,12 +31,12 @@ def _add_common(s: argparse.ArgumentParser) -> None:
     s.add_argument("--api-key", default="")
     s.add_argument("--api-key-env", default="")
     s.add_argument(
-        "--provider",
-        choices=["openai", "claude_code"],
-        default=os.environ.get("ZSH_AI_PROVIDER", "openai"),
-        help="backend: openai (OpenAI-compatible endpoint, default) or "
-        "claude_code (Claude Agent SDK; chat only). complete/FIM is "
-        "openai-only.",
+        "--adapter",
+        choices=["openai-compatible", "claude_code"],
+        default=os.environ.get("ZSH_AI_ADAPTER", "openai-compatible"),
+        help="transport backend: openai-compatible (HTTP endpoint, default) "
+        "or claude_code (Claude Agent SDK; chat only). complete/FIM is "
+        "openai-compatible-only.",
     )
 
 

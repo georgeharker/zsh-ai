@@ -208,84 +208,88 @@ For chat-trained code models that need FIM tokens (Qwen-Coder,
 CodeLlama, DeepSeek-Coder, StarCoder), set the template trio — see
 comments at the end of `lib/fim.zsh` for the exact tokens per model.
 
-### Multiple models (profiles)
+### Multiple providers & profiles
 
-The zstyle config above defines a single model — that's the `default`
-profile, and nothing here is required. To switch between several models at
+The zstyle config above defines a single backend — that's the `default`
+provider, and nothing here is required. To switch between several backends at
 runtime (e.g. a fast local one and a larger remote one), add a TOML file of
-**profiles** at `$XDG_CONFIG_HOME/zsh-ai/models.toml` (or point
+**providers** at `$XDG_CONFIG_HOME/zsh-ai/models.toml` (or point
 `zstyle ':zsh-ai:*' models_file <path>` at one):
 
 ```toml
-# Values merged into every profile (override per-profile).
+# Values merged into every provider (override per-provider).
 [defaults]
 temperature = 0.2
 
-[models.fast]
+[providers.fast]
 model      = "qwen2.5-coder:1.5b"
 max_tokens = 1024
 
-[models.smart]
+[providers.smart]
 model = "qwen2.5-coder:7b-instruct"
 
-[models.cloud]
+[providers.cloud]
 model       = "gpt-4o-mini"
 endpoint    = "https://api.openai.com/v1"   # base URL — the bridge adds /chat/completions
 api_key_env = "OPENAI_API_KEY"
 
-# Default profile per widget (ask, modify, question, fim).
-[widgets]
+# A profile is a widget→provider map (ask, modify, question, fim).
+[profiles.local]
 ask      = "smart"
 modify   = "smart"
 question = "smart"
 fim      = "fast"
 ```
 
-A profile bundles the per-model bridge args: `provider`, `model`,
+A provider bundles the per-backend bridge args: `adapter`, `model`,
 `endpoint`, `api_key` / `api_key_env`, `max_tokens`, `temperature`,
-`enable_thinking`, and (FIM) `stop`. See `models.toml.example` for the
-fully-annotated schema.
+`enable_thinking`, and (FIM) `stop`. The `adapter` is the transport —
+`openai-compatible` (default) or `claude_code` (see below). See
+`models.toml.example` for the fully-annotated schema.
 
-**Overlay / precedence.** Each field a profile omits falls back — in order
+**Overlay / precedence.** Each field a provider omits falls back — in order
 — to the TOML `[defaults]`, then your `:zsh-ai:*` zstyle, then the bridge's
-built-in default. So profiles list only what differs. The `default` profile
-has no TOML entry and resolves entirely from zstyle (your single-model
-config); define `[models.default]` to override it. With no models file at
-all, behaviour is exactly the single-model zstyle setup.
+built-in default. So providers list only what differs. The `default` provider
+has no TOML entry and resolves entirely from zstyle (your single-backend
+config); define `[providers.default]` to override it. With no models file at
+all, behaviour is exactly the single-backend zstyle setup.
 
 **Switching at runtime:**
 
 ```zsh
-# inside the scratchpad: Alt-M cycles the active profile (sticky for the session)
-zsh-ai-model            # list profiles, mark the active one
-zsh-ai-model smart      # set the active profile
-zsh-ai-model reset      # revert to the per-widget defaults
-zsh-ai --model cloud 'q'  # one-shot CLI override
+# inside the scratchpad: Alt-M cycles the active provider (sticky for the session)
+zsh-ai-provider             # list providers, mark the active one
+zsh-ai-provider smart       # set the active provider
+zsh-ai-provider reset       # revert to the per-widget defaults
+zsh-ai --provider cloud 'q' # one-shot CLI override
 ```
 
-**Picking the per-widget default** — a `profile` zstyle overrides the
-file's `[widgets]` map, so you can choose per machine (e.g. local vs cloud
-keyed on `$HOST`) without editing the file. Highest precedence first:
+**Profiles — a whole set per machine.** A *profile* is a named widget→provider
+map; picking one chooses which provider each widget uses by default. Select it
+per machine (e.g. local vs cloud keyed on `$HOST`) without editing the file.
+Provider resolution, highest precedence first:
 
 ```zsh
-zstyle ':zsh-ai:scratch' profile_ask <name>   # one widget
-zstyle ':zsh-ai:scratch' profile     <name>   # all of ask/modify/question
-zstyle ':zsh-ai:fim'     profile     <name>
-zstyle ':zsh-ai:*'       profile     <name>   # global
+zstyle ':zsh-ai:scratch' provider_ask <name>   # pin one widget's provider
+zstyle ':zsh-ai:scratch' provider     <name>   # pin all of ask/modify/question
+zstyle ':zsh-ai:*'       provider     <name>   # pin globally
+zstyle ':zsh-ai:scratch' profile      <name>   # else: select a profile for scratch
+zstyle ':zsh-ai:*'       profile      <name>   # …or globally
 ```
 
-then `[widgets]`, then `default`. The TOML is parsed by `bin/zsh-ai-models`
-(Python's stdlib `tomllib` — no extra dependency) into a cache under
-`$XDG_CACHE_HOME/zsh-ai/`, regenerated when the file changes.
+then the active profile's map, then `default`. The TOML is parsed by
+`bin/zsh-ai-models` (Python's stdlib `tomllib` — no extra dependency) into a
+cache under `$XDG_CACHE_HOME/zsh-ai/`, regenerated when the file changes.
 
-### Claude Code backend (`provider = "claude_code"`)
+### Claude Code adapter (`adapter = "claude_code"`)
 
-By default every request goes to an OpenAI-compatible endpoint. The
-chat-style modes (`^Xa` ask, `^Xm` modify, `^Xq` question) can instead be
-routed through the **Claude Agent SDK**, which reuses the `claude` CLI's
-own auth — your Claude subscription login or `ANTHROPIC_API_KEY` — so
-there's no endpoint or API key to configure. It runs as a plain
-single-turn chat (all tools disabled; no file or shell access).
+The `adapter` is a provider's transport. By default it's `openai-compatible`
+(an HTTP endpoint). The chat-style modes (`^Xa` ask, `^Xm` modify, `^Xq`
+question) can instead use the `claude_code` adapter — the **Claude Agent
+SDK**, which reuses the `claude` CLI's own auth (your Claude subscription
+login or `ANTHROPIC_API_KEY`), so there's no endpoint or API key to
+configure. It runs as a plain single-turn chat (all tools disabled; no file
+or shell access).
 
 Two prerequisites, both optional for everyone else:
 
@@ -294,28 +298,29 @@ uv sync --extra claude     # install the SDK into the plugin venv
 # and the `claude` CLI must be on PATH (you likely already have it)
 ```
 
-Select it per profile or globally. The `model` is any id/alias the
+Set it on a provider, or globally via zstyle. The `model` is any id/alias the
 `claude` CLI accepts (`claude-sonnet-4-6`, `sonnet`, …):
 
 ```toml
 # models.toml
-[models.claude]
-provider = "claude_code"
-model    = "claude-sonnet-4-6"
+[providers.claude]
+adapter = "claude_code"
+model   = "claude-sonnet-4-6"
 ```
 
 ```zsh
 # …or without a models file, flip a whole context over via zstyle:
-zstyle ':zsh-ai:scratch' provider claude_code
-zstyle ':zsh-ai:scratch' model    claude-sonnet-4-6
+zstyle ':zsh-ai:scratch' adapter claude_code
+zstyle ':zsh-ai:scratch' model   claude-sonnet-4-6
 ```
 
-`provider` follows the same per-feature → `:zsh-ai:*` fallback as
-`endpoint`/`api_key`, and a TOML profile's `provider` wins over both.
-**FIM (`^Xi`) is openai-only** — keep its profile on the default provider.
-With `claude_code`, `endpoint`/`api_key`/`max_tokens`/`temperature` are
-ignored (the `claude` CLI governs them); `model`, the system prompt, and
-`enable_thinking` carry over.
+`adapter` follows the same per-feature → `:zsh-ai:*` fallback as
+`endpoint`/`api_key`, and a TOML provider's `adapter` wins over both.
+**FIM (`^Xi`) is openai-compatible-only** — keep its provider on an
+openai-compatible adapter. With `claude_code`,
+`endpoint`/`api_key`/`max_tokens`/`temperature` are ignored (the `claude`
+CLI governs them); `model`, the system prompt, and `enable_thinking` carry
+over.
 
 **Thinking on this backend.** `enable_thinking` maps to the SDK's thinking
 config: `false` → off, `true` → on with a budget cap, `auto` → *adaptive*
@@ -445,15 +450,15 @@ FIM-token templating details.
 ## CLI
 
 ```
-zsh-ai [--raw|--view] [--model <name>] <question>   one-shot question
-zsh-ai -h | help                                    usage
+zsh-ai [--raw|--view] [--provider <name>] <question>   one-shot question
+zsh-ai -h | help                                       usage
 ```
 
 For shell-scripting and ad-hoc questions outside ZLE. Defaults to
 piping the answer through `bin/mdrender` for pretty markdown. `--raw`
 emits the bridge's raw stream; `--view` opens the answer in
-`bin/mdview` (scrollable modal). `--model <name>` selects a profile
-(see Multiple models); otherwise it uses the `question`-widget default.
+`bin/mdview` (scrollable modal). `--provider <name>` selects a provider
+(see Multiple providers); otherwise it uses the `question`-widget default.
 
 ### `zsh-ai-run` — headless mode-specific invocation
 

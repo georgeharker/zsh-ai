@@ -176,7 +176,7 @@ _zsh_ai_scratch_kick_off() {
     # the existing zstyle config; a models file adds named overlays).
     local -a margs
     if ! _zsh_ai_model_args "$_zsh_ai_scratch_mode" \
-            "$(_zsh_ai_current_profile "$_zsh_ai_scratch_mode")" margs; then
+            "$(_zsh_ai_current_provider "$_zsh_ai_scratch_mode")" margs; then
         zle -M "zsh-ai: no model — set zstyle ':zsh-ai:scratch' model <name> or a models file"
         return 1
     fi
@@ -572,17 +572,17 @@ _zsh_ai_scratch_thinking_toggle() {
     return 0
 }
 
-# Alt-M inside the scratchpad: cycle the active model profile for the NEXT
+# Alt-M inside the scratchpad: cycle the active provider for the NEXT
 # call (and onward — the choice is sticky for the session). Cycles through
-# `default` plus any models-file profiles. No-op when there's only the
-# `default` profile (nothing to switch to).
-_zsh_ai_scratch_model_cycle() {
-    local -a profiles=( ${(f)"$(_zsh_ai_profiles)"} )
-    (( ${#profiles} <= 1 )) && { zle -M "zsh-ai: only the default model is configured"; return 0; }
-    local cur="$(_zsh_ai_current_profile "$_zsh_ai_scratch_mode")"
-    local i=${profiles[(I)$cur]}
+# `default` plus any models-file providers. No-op when there's only the
+# `default` provider (nothing to switch to).
+_zsh_ai_scratch_provider_cycle() {
+    local -a providers=( ${(f)"$(_zsh_ai_providers)"} )
+    (( ${#providers} <= 1 )) && { zle -M "zsh-ai: only the default provider is configured"; return 0; }
+    local cur="$(_zsh_ai_current_provider "$_zsh_ai_scratch_mode")"
+    local i=${providers[(I)$cur]}
     (( i == 0 )) && i=1
-    _zsh_ai_active_profile="${profiles[i % ${#profiles} + 1]}"
+    _zsh_ai_active_provider="${providers[i % ${#providers} + 1]}"
     _zsh_ai_scratch_render_now
     zle -R
     return 0
@@ -754,7 +754,7 @@ _zsh_ai_scratch_escape() {
     case "$k" in
         $'\e') zle _zsh_ai_scratch_cancel ;;            # Esc Esc
         t)     zle _zsh_ai_scratch_thinking_toggle ;;   # Alt-T
-        m)     zle _zsh_ai_scratch_model_cycle ;;       # Alt-M
+        m)     zle _zsh_ai_scratch_provider_cycle ;;   # Alt-M
         '['|O)                                          # CSI/SS3 → arrow
             local k2
             if read -t 0.3 -k k2 2>/dev/null; then
@@ -860,18 +860,18 @@ zsh-ai-reset() {
     print -- "zsh-ai: state reset"
 }
 
-# Switch the active model profile (or list them). The choice is sticky
+# Switch the active provider (or list them). The choice is sticky
 # for the session — it overrides each widget's default until changed.
-# With no arg, lists profiles and marks the active one. `default` is the
-# zstyle config; further profiles come from the models file.
-zsh-ai-model() {
-    local -a profiles=( ${(f)"$(_zsh_ai_profiles)"} )
+# With no arg, lists providers and marks the active one. `default` is the
+# zstyle config; further providers come from the models file.
+zsh-ai-provider() {
+    local -a providers=( ${(f)"$(_zsh_ai_providers)"} )
     if [[ -z "$1" ]]; then
-        print -- "active: ${_zsh_ai_active_profile:-(per-widget default)}"
-        print -- "profiles:"
+        print -- "active: ${_zsh_ai_active_provider:-(per-widget default)}"
+        print -- "providers:"
         local p
-        for p in "${profiles[@]}"; do
-            if [[ "$p" == "$_zsh_ai_active_profile" ]]; then
+        for p in "${providers[@]}"; do
+            if [[ "$p" == "$_zsh_ai_active_provider" ]]; then
                 print -- "  * $p"
             else
                 print -- "    $p"
@@ -880,16 +880,16 @@ zsh-ai-model() {
         return 0
     fi
     if [[ "$1" == reset ]]; then
-        _zsh_ai_active_profile=""
-        print -- "zsh-ai: active model profile → (per-widget default)"
+        _zsh_ai_active_provider=""
+        print -- "zsh-ai: active provider → (per-widget default)"
         return 0
     fi
-    if (( ${profiles[(I)$1]} == 0 )); then
-        print -ru2 -- "zsh-ai-model: unknown profile '$1' (have: ${profiles[*]})"
+    if (( ${providers[(I)$1]} == 0 )); then
+        print -ru2 -- "zsh-ai-provider: unknown provider '$1' (have: ${providers[*]})"
         return 1
     fi
-    _zsh_ai_active_profile="$1"
-    print -- "zsh-ai: active model profile → $1"
+    _zsh_ai_active_provider="$1"
+    print -- "zsh-ai: active provider → $1"
 }
 
 # Run the full plugin pipeline (bridge + optional renderer) headlessly.
@@ -929,7 +929,7 @@ zsh-ai-run() {
     _zsh_ai_scratch_build_prompts "$mode" "$query" "$target"
 
     local -a margs   # shuck: ignore=C001   # passed by name to _zsh_ai_chat (${(@P)})
-    if ! _zsh_ai_model_args "$mode" "$(_zsh_ai_current_profile "$mode")" margs; then
+    if ! _zsh_ai_model_args "$mode" "$(_zsh_ai_current_provider "$mode")" margs; then
         print -ru2 -- "zsh-ai-run: no model configured"
         return 1
     fi
@@ -965,7 +965,7 @@ _zsh_ai_scratch_register() {
     zle -N _zsh_ai_scratch_down
     zle -N _zsh_ai_scratch_up
     zle -N _zsh_ai_scratch_thinking_toggle
-    zle -N _zsh_ai_scratch_model_cycle
+    zle -N _zsh_ai_scratch_provider_cycle
     zle -N _zsh_ai_scratch_relaunch_thinking
     zle -N _zsh_ai_scratch_g_action
     zle -N _zsh_ai_scratch_edit_instruction
@@ -986,8 +986,8 @@ _zsh_ai_scratch_register() {
     # Alt-T cycles the thinking override for the next call. \et is the
     # ESC-prefix encoding of Alt-T that zsh sees on most terminals.
     bindkey -M zsh-ai-scratch $'\et' _zsh_ai_scratch_thinking_toggle
-    # Alt-M cycles the active model profile (\em = ESC-prefix Alt-M).
-    bindkey -M zsh-ai-scratch $'\em' _zsh_ai_scratch_model_cycle
+    # Alt-M cycles the active provider (\em = ESC-prefix Alt-M).
+    bindkey -M zsh-ai-scratch $'\em' _zsh_ai_scratch_provider_cycle
 
     # Cancel. Bare \e is a PREFIX for arrow keys (\e[A etc.), so we route
     # it through _zsh_ai_scratch_escape, which disambiguates a lone Esc

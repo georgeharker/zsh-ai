@@ -6,9 +6,22 @@ here means the plugin needs no jq — Python (the bridge's dependency) is
 already required, and ``tomllib`` is stdlib. See ``models.toml`` for the
 schema.
 
-Each model becomes a flat set of fields in one assoc array keyed
+Three tiers (see the README for the full picture):
+
+  ``[providers.<name>]``  a named backend config: an ``adapter`` (transport —
+                          ``openai-compatible`` or ``claude_code``) plus the
+                          model, endpoint, key, and tuning. Runtime-switchable
+                          (Alt-M / ``zsh-ai-provider``). Was ``[models.*]``.
+  ``[profiles.<name>]``   a machine "section": a map of widget
+                          (ask/modify/question/fim) → provider name. Selected
+                          per machine via ``zstyle ':zsh-ai:*' profile <name>``.
+                          Replaces the old single ``[widgets]`` map.
+  ``[defaults]``          fields merged into every provider.
+
+Each provider becomes a flat set of fields in one assoc array keyed
 ``"<name>:<field>"`` (zsh has no nested containers; embedding the name in
-the key avoids both early-splitting and invalid variable names).
+the key avoids both early-splitting and invalid variable names). Each
+profile's widget map is keyed ``"<profile>:<widget>"`` the same way.
 """
 
 from __future__ import annotations
@@ -19,7 +32,7 @@ from typing import Any, Dict
 
 _SCALARS = (
     "model",
-    "provider",
+    "adapter",
     "endpoint",
     "api_key",
     "api_key_env",
@@ -47,19 +60,19 @@ def _thinking(value: object) -> str:
 
 def render(data: Dict[str, Any]) -> str:
     defaults = data.get("defaults") or {}
-    models = data.get("models") or {}
-    widgets = data.get("widgets") or {}
+    providers = data.get("providers") or {}
+    profiles = data.get("profiles") or {}
 
     lines = [
-        "typeset -ga _ZSH_AI_PROFILES=(" + " ".join(_q(n) for n in models) + ")",
-        "typeset -gA _ZSH_AI_WIDGETS=("
-        + " ".join(f"{_q(k)} {_q(v)}" for k, v in widgets.items())
+        "typeset -ga _ZSH_AI_PROVIDERS=("
+        + " ".join(_q(n) for n in providers)
         + ")",
+        "typeset -ga _ZSH_AI_PROFILES=(" + " ".join(_q(n) for n in profiles) + ")",
     ]
 
     fields = []
-    for name, prof in models.items():
-        merged = {**defaults, **(prof or {})}
+    for name, prov in providers.items():
+        merged = {**defaults, **(prov or {})}
         for key in _SCALARS:
             val = merged.get(key)
             if val is not None:
@@ -74,7 +87,15 @@ def render(data: Dict[str, Any]) -> str:
             tokens = stop if isinstance(stop, list) else [stop]
             joined = "\x1f".join(str(t) for t in tokens)
             fields.append(f"{_q(f'{name}:stop')} {_q(joined)}")
-    lines.append("typeset -gA _ZSH_AI_PROFILE_FIELDS=(" + " ".join(fields) + ")")
+    lines.append("typeset -gA _ZSH_AI_PROVIDER_FIELDS=(" + " ".join(fields) + ")")
+
+    # Each profile is a widget→provider map, flattened to "<profile>:<widget>".
+    pw = []
+    for pname, pmap in profiles.items():
+        for widget, provider_name in (pmap or {}).items():
+            pw.append(f"{_q(f'{pname}:{widget}')} {_q(provider_name)}")
+    lines.append("typeset -gA _ZSH_AI_PROFILE_WIDGETS=(" + " ".join(pw) + ")")
+
     return "\n".join(lines) + "\n"
 
 

@@ -2,7 +2,7 @@
 
 Two backends share the same output plumbing (content/thinking sinks,
 the :class:`StreamSplitter`, and the ``--status-file`` events): the
-default ``openai`` provider talks to an OpenAI-compatible endpoint, and
+default ``openai-compatible`` adapter talks to an HTTP endpoint, and
 ``claude_code`` routes the query through the Claude Agent SDK (see
 :mod:`zsh_ai.llm.claude_code`). A "producer" pumps reasoning/content
 deltas into an :class:`_Emitter`; :func:`_run_chat` owns the lifecycle
@@ -180,7 +180,7 @@ def _run_chat(args: ChatArgs, producer: Producer) -> int:
 
 
 def cmd_chat(args: ChatArgs) -> int:
-    if args.get("provider", "openai") == "claude_code":
+    if args.get("adapter", "openai-compatible") == "claude_code":
         # Imported lazily so the openai path (and --help) never pays for
         # an optional dependency that may not be installed.
         from .claude_code import stream_claude_code

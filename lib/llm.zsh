@@ -8,8 +8,8 @@
 #   _zsh_ai_chat  stream a chat response to stdout (caller captures or
 #                 pipes through a renderer).
 #
-# The model parts (model / endpoint / api key / max_tokens / temperature /
-# enable_thinking) are resolved per profile by `_zsh_ai_model_args`
+# The model parts (model / adapter / endpoint / api key / max_tokens /
+# temperature / enable_thinking) are resolved per provider by `_zsh_ai_model_args`
 # (lib/config.zsh) into a flag array; callers pass that array's NAME here.
 # The async scratchpad sites and FIM build the bridge command directly
 # from the same array, so they don't route through this file.
