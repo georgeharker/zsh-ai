@@ -1,0 +1,3 @@
+[submodule "external/llmkit"]
+	path = external/llmkit
+	url = git@github.com:georgeharker/llmkit.git

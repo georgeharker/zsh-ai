@@ -1,11 +1,11 @@
 #!/usr/bin/env zsh
 # bin/zsh-ai-llm — entry-point for the zsh-ai LLM bridge.
 #
-# Execs the venv's python with `-m zsh_ai.llm`, which dispatches via
-# src/zsh_ai/llm/__main__.py → cli.main. Owning this file (rather than
-# letting [project.scripts] generate one) keeps the invocation script
-# free of the cargo-culted Windows-launcher suffix stripping that
-# setuptools / uv emit by default.
+# Execs the venv's python with `-m llmkit.bridge` (the extracted bridge
+# library, vendored as a submodule under external/llmkit). Owning this
+# file (rather than letting [project.scripts] generate one) keeps the
+# invocation script free of the cargo-culted Windows-launcher suffix
+# stripping that setuptools / uv emit by default.
 #
 # `${0:A:h:h}` is the zsh idiom for "absolute parent dir of the
 # script's parent dir" — i.e. the repo root, with symlinks resolved
@@ -14,4 +14,4 @@
 # Setup: `uv sync` in the plugin directory builds .venv/ with the
 # openai SDK and installs this package editable.
 
-exec "${0:A:h:h}/.venv/bin/python" -m zsh_ai.llm "$@"
+exec "${0:A:h:h}/.venv/bin/python" -m llmkit.bridge "$@"

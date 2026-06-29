@@ -7,4 +7,4 @@
 #
 # Setup: `uv sync` in the plugin directory.
 
-exec "${0:A:h:h}/.venv/bin/python" -m zsh_ai.view "$@"
+exec "${0:A:h:h}/.venv/bin/python" -m llmkit.md.view "$@"

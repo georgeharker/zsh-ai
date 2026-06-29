@@ -3,19 +3,26 @@ name = "zsh-ai"
 version = "0.1.0"
 description = "OpenAI-compatible LLM integration for zsh — Python bridge"
 requires-python = ">=3.11"  # tomllib (models.py) is stdlib only from 3.11
+# The streaming bridge + markdown rendering live in the `llmkit` library,
+# vendored as a submodule under external/llmkit (see [tool.uv.sources]).
+# zsh-ai keeps only the zsh-specific glue: models.py (its ConfigParser
+# subclass + the zsh serializer) and the lib/*.zsh orchestration.
 dependencies = [
-    "openai>=1.0",
-    "rich>=13.0",      # used by zsh-ai-render (one-shot markdown)
-    "textual>=0.50",   # used by zsh-ai-view (scrollable modal)
+    "llmkit[bridge,md]",
 ]
 
 # Optional `claude_code` chat backend: the Claude Agent SDK routes
 # chat/question through the `claude` CLI's auth instead of an OpenAI
 # endpoint. Off by default (also needs the `claude` CLI installed);
-# enable with `uv sync --extra claude`. Imported lazily so the default
-# openai path never requires it.
+# enable with `uv sync --extra claude`. Imported lazily by llmkit so the
+# default openai path never requires it.
 [project.optional-dependencies]
-claude = ["claude-agent-sdk>=0.2"]
+claude = ["llmkit[claude]"]
+
+# Resolve llmkit from the vendored submodule, installed editable so edits
+# in external/llmkit take effect without a reinstall.
+[tool.uv.sources]
+llmkit = { path = "external/llmkit", editable = true }
 
 # `uv sync` installs this package (editable) into .venv/ along with
 # openai. We do NOT declare a [project.scripts] entry — the auto-

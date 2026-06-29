@@ -35,12 +35,17 @@ already brought up.
 
 ```zsh
 # In the plugin directory, once:
-cd /path/to/zsh-ai && uv sync
+cd /path/to/zsh-ai
+git submodule update --init      # fetch the vendored llmkit library
+uv sync
 ```
 
 `uv sync` creates `.venv/` and installs the bridge, viewer, and
-renderer. The plugin invokes them directly via thin shims under `bin/`
-— no PYTHONPATH dance, no venv activation.
+renderer (the `llmkit` library, vendored under `external/llmkit`). The
+plugin invokes them directly via thin shims under `bin/` — no PYTHONPATH
+dance, no venv activation. If you cloned without submodules, run the
+`git submodule update --init` above (or clone with
+`--recurse-submodules`) before `uv sync`.
 
 ```zsh
 # ~/.zshrc
@@ -488,13 +493,16 @@ For one-off debugging of the HTTP request:
 - **Python bridge**: `bin/zsh-ai-llm` (Python + openai SDK) is the
   only thing that speaks HTTP. The zsh side spawns it as a subprocess
   and pipes content / thinking / status through fifos.
-- **Layout**: Python under `src/zsh_ai/`, each piece with a thin bin/ shim:
-  - `src/zsh_ai/llm/` — bridge (chat, complete, sinks, stream, status
+- **Layout**: the streaming bridge and markdown renderer live in the
+  [`llmkit`](https://github.com/georgeharker/llmkit) library, vendored as a
+  git submodule under `external/llmkit` and installed editable via
+  `[tool.uv.sources]`. Each piece has a thin bin/ shim:
+  - `llmkit.bridge` — bridge (chat, complete, sinks, stream, status
     events) → `bin/zsh-ai-llm`
-  - `src/zsh_ai/render/` — incremental markdown renderer → `bin/mdrender`
-  - `src/zsh_ai/view/` — textual modal viewer → `bin/mdview`
+  - `llmkit.md.render` — incremental markdown renderer → `bin/mdrender`
+  - `llmkit.md.view` — textual modal viewer → `bin/mdview`
   - `src/zsh_ai/models.py` — TOML models file → cached zsh assignments
-    the plugin sources → `bin/zsh-ai-models`
+    the plugin sources (parses via `llmkit.bridge.config`) → `bin/zsh-ai-models`
 - **Scratchpad flow (ask/modify/question)**: synchronous around the
   foreground viewer. Widget spawns the bridge in a backgrounded
   subshell, animates a spinner via `zle -M` while waiting for the
