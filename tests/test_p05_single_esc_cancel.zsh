@@ -32,7 +32,13 @@ pty_inspect shellA
 pty_assert_eq "active after open" "1" "${_pty_fields[SCRATCH_ACTIVE]}" || pty_fail ""
 
 pty_press_keys shellA $'\e'         # single Esc
-sleep 1.2                            # > KEYTIMEOUT + the widget's peek window
+# Drain (don't sleep): under zpty the child's ZLE only processes a trailing
+# keystroke while the master is being read — a bare sleep leaves the lone Esc
+# buffered until the next key (the inspector's ^Y), which the widget's peek
+# would then consume instead of timing out. pty_drain pumps ZLE for the full
+# window (> KEYTIMEOUT + the widget's 0.3s peek) so the lone-Esc → cancel path
+# actually runs.
+pty_drain shellA 1.2
 pty_inspect shellA
 pty_assert_eq "single Esc cancels from instruction" \
     "0" "${_pty_fields[SCRATCH_ACTIVE]}" \
@@ -44,12 +50,12 @@ pty_spawn shellB || pty_fail "spawn B"
 pty_press_keys shellB $'\030a'      # ^Xa
 pty_press_keys shellB "test"
 pty_press_keys shellB $'\r'         # submit → select
-sleep 0.8
+pty_drain shellB 0.8                 # pump ZLE so submit is processed (see above)
 pty_inspect shellB
 pty_assert_eq "state is select" "select" "${_pty_fields[SCRATCH_STATE]}" || pty_fail ""
 
 pty_press_keys shellB $'\e'         # single Esc
-sleep 1.2                            # > KEYTIMEOUT + the widget's peek window
+pty_drain shellB 1.2                 # pump ZLE so the lone Esc is processed (see above)
 pty_inspect shellB
 pty_assert_eq "single Esc cancels from select" \
     "0" "${_pty_fields[SCRATCH_ACTIVE]}" \
