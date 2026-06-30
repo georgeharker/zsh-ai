@@ -26,6 +26,7 @@ from __future__ import annotations
 import sys
 import tomllib
 
+from llmkit.bridge import provider_supports_complete
 from llmkit.bridge.config import Config, ConfigParser, Provider
 
 # Scalar provider fields emitted verbatim (name:field → value).
@@ -54,6 +55,13 @@ def _provider_fields(name: str, p: Provider) -> list[str]:
             out.append(f"{_q(f'{name}:{key}')} {_q(val)}")
     if p.enable_thinking is not None:
         out.append(f"{_q(f'{name}:enable_thinking')} {_q(p.enable_thinking)}")
+    # Whether this provider's adapter can serve FIM (complete). Emitted so the
+    # FIM widget can disable itself for chat-only adapters (anthropic/google/
+    # claude_code) up front, instead of failing at call time. llmkit owns the
+    # capability — see bridge.adapter_supports_complete.
+    out.append(
+        f"{_q(f'{name}:supports_fim')} {_q('1' if provider_supports_complete(p) else '0')}"
+    )
     # FIM stop tokens: a tuple joined on US (0x1f), since zsh assoc values are
     # flat strings — the zsh side splits it back.
     if p.stop:

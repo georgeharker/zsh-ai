@@ -109,9 +109,23 @@ _zsh_ai_fim_insert() {
     # Per-feature endpoint/api_key override; consumed by _zsh_ai_model_args.
     local _zsh_ai_ctx=':zsh-ai:fim'
 
+    local provider="$(_zsh_ai_current_provider fim)"
+
     local -a margs
-    if ! _zsh_ai_model_args fim "$(_zsh_ai_current_provider fim)" margs; then
+    if ! _zsh_ai_model_args fim "$provider" margs; then
         zle -M "zsh-ai: configure model with  zstyle ':zsh-ai:fim' model <name> (or a models file)"
+        return 0
+    fi
+
+    # FIM availability gate. A chat-only adapter (anthropic/google/claude_code)
+    # has no completions endpoint, so FIM can't work there. bin/zsh-ai-models
+    # emits supports_fim per provider via llmkit's adapter_supports_complete;
+    # "0" means disable the widget for this provider rather than emit a request
+    # the bridge would reject. Unset (zstyle-only `default`, no models file)
+    # falls through — that path is openai-compatible and supports FIM.
+    _zsh_ai_models_load >/dev/null 2>&1
+    if [[ "${_ZSH_AI_PROVIDER_FIELDS[${provider}:supports_fim]-}" == 0 ]]; then
+        zle -M "zsh-ai: FIM unavailable for provider '$provider' (chat-only adapter; no completions endpoint)"
         return 0
     fi
 

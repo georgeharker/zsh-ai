@@ -11,13 +11,19 @@ dependencies = [
     "llmkit[bridge,md]",
 ]
 
-# Optional `claude_code` chat backend: the Claude Agent SDK routes
-# chat/question through the `claude` CLI's auth instead of an OpenAI
-# endpoint. Off by default (also needs the `claude` CLI installed);
-# enable with `uv sync --extra claude`. Imported lazily by llmkit so the
-# default openai path never requires it.
+# Optional native-protocol chat backends, each lazily imported by llmkit so
+# the default openai path never requires them. Enable per-backend with
+# `uv sync --extra <name>`:
+#   claude    — Claude Agent SDK, routed through the `claude` CLI's auth
+#               (also needs the `claude` CLI installed)
+#   anthropic — native Anthropic Messages API (anthropic SDK)
+#   google    — native Google Gemini API (google-genai SDK)
+# All three are chat-only (no FIM); point a provider's endpoint at a gateway
+# (e.g. OpenCode Zen) to route a native protocol through it.
 [project.optional-dependencies]
 claude = ["llmkit[claude]"]
+anthropic = ["llmkit[anthropic]"]
+google = ["llmkit[google]"]
 
 # Resolve llmkit from the vendored submodule, installed editable so edits
 # in external/llmkit take effect without a reinstall.
