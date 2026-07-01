@@ -28,6 +28,8 @@
 typeset -g  _zsh_ai_async_pid=0
 typeset -g  _zsh_ai_async_outfile=""
 typeset -g  _zsh_ai_async_donefile=""
+typeset -g  _zsh_ai_async_errfile=""
+typeset -g  _zsh_ai_async_rcfile=""
 typeset -g  _zsh_ai_async_tick_pid=0
 typeset -g  _zsh_ai_async_tick_fd=0
 typeset -g  _zsh_ai_async_label=""
@@ -67,15 +69,19 @@ _zsh_ai_async_run() {
     # Split declare from assign: `local var=$(cmd) || return` doesn't
     # catch cmd's failure — zsh's `local` swallows the subshell exit
     # code, same as bash.
-    local outfile donefile
+    local outfile donefile errfile rcfile
     outfile=$(mktemp "$_ZSH_AI_TMPDIR/out.XXXXXX") || return 1
     donefile="${outfile}.done"
+    errfile="${outfile}.err"
+    rcfile="${outfile}.rc"
 
-    # Run the command in a backgrounded subshell. Its stdout is captured
-    # into outfile (the callback reads it via REPLY). Bridge stderr is
-    # NOT suppressed — connection errors etc. should reach the user's
-    # terminal so they know why the spinner finished with no result.
-    ( "$@" > "$outfile"; touch "$donefile" ) &!
+    # Run the command in a backgrounded subshell. stdout → outfile (the
+    # callback reads it via REPLY); stderr → errfile and the exit code →
+    # rcfile, so _zsh_ai_async_complete can surface a failed call (bad
+    # model, auth, connection refused, …) via `zle -M` instead of dropping
+    # it as an empty result the callback silently ignores. donefile is
+    # touched LAST, so its presence guarantees rcfile/errfile are complete.
+    ( "$@" > "$outfile" 2> "$errfile"; print -r -- $? > "$rcfile"; touch "$donefile" ) &!
     local pid=$!
 
     # Heartbeat fifo. RW open with `<>` so we don't block waiting for
@@ -94,6 +100,8 @@ _zsh_ai_async_run() {
     _zsh_ai_async_pid=$pid
     _zsh_ai_async_outfile="$outfile"
     _zsh_ai_async_donefile="$donefile"
+    _zsh_ai_async_errfile="$errfile"
+    _zsh_ai_async_rcfile="$rcfile"
     _zsh_ai_async_tick_pid=$tpid
     _zsh_ai_async_tick_fd=$tick_fd
     _zsh_ai_async_label="$label"
@@ -118,6 +126,8 @@ _zsh_ai_async_cancel() {
     local tfd=$_zsh_ai_async_tick_fd
     local outfile=$_zsh_ai_async_outfile
     local donefile=$_zsh_ai_async_donefile
+    local errfile=$_zsh_ai_async_errfile
+    local rcfile=$_zsh_ai_async_rcfile
 
     # Guard each tear-down step rather than suppressing errors:
     # if our pid/fd tracking has lost sync with reality we want to
@@ -131,7 +141,7 @@ _zsh_ai_async_cancel() {
     # shell's stderr to /dev/null forever, breaking unrelated TUIs
     # (e.g. textual apps that probe stderr.isatty()).
     (( tfd > 0 ))  && { zle -F -w $tfd; exec {tfd}<&-; }
-    rm -f "$outfile" "$donefile"
+    rm -f "$outfile" "$donefile" "$errfile" "$rcfile"
 
     _zsh_ai_async_reset_state
     return 0
@@ -143,6 +153,8 @@ _zsh_ai_async_reset_state() {
     _zsh_ai_async_pid=0
     _zsh_ai_async_outfile=""
     _zsh_ai_async_donefile=""
+    _zsh_ai_async_errfile=""
+    _zsh_ai_async_rcfile=""
     _zsh_ai_async_tick_pid=0
     _zsh_ai_async_tick_fd=0
     _zsh_ai_async_label=""
@@ -155,18 +167,37 @@ _zsh_ai_async_reset_state() {
 # display change reaches the terminal (same flush path as the spinner).
 _zsh_ai_async_complete() {
     local outfile=$_zsh_ai_async_outfile
+    local errfile=$_zsh_ai_async_errfile
+    local rcfile=$_zsh_ai_async_rcfile
     local callback="$_zsh_ai_async_callback"
 
     REPLY="$(<$outfile)"
-    rm -f "$outfile" "$_zsh_ai_async_donefile"
+    # $(<file) strips the trailing newline print adds, so rc is a bare int.
+    local rc=0 err=""
+    [[ -f "$rcfile" ]] && rc="$(<$rcfile)"
+    [[ -s "$errfile" ]] && err="$(<$errfile)"
+    rm -f "$outfile" "$errfile" "$rcfile" "$_zsh_ai_async_donefile"
 
     # Mark "not in flight" so callback's state-aware widgets see the
     # post-completion world.
     _zsh_ai_async_pid=0
     _zsh_ai_async_outfile=""
     _zsh_ai_async_donefile=""
+    _zsh_ai_async_errfile=""
+    _zsh_ai_async_rcfile=""
 
     POSTDISPLAY=""
+
+    # Bridge failed (bad model, auth, connection refused, …). Surface it via
+    # `zle -M` — the first stderr line, trimmed — instead of invoking the
+    # callback with an empty REPLY it would silently treat as "no result".
+    if [[ "$rc" != 0 ]]; then
+        local summary="${err%%$'\n'*}"
+        [[ -z "$summary" ]] && summary="call failed (exit $rc)"
+        (( ${#summary} > 140 )) && summary="${summary[1,137]}…"
+        zle -M "zsh-ai: $summary"
+        return 0
+    fi
 
     if [[ -n "$callback" ]] && (( $+functions[$callback] )); then
         "$callback"
