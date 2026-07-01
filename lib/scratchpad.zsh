@@ -290,7 +290,9 @@ _zsh_ai_scratch_kick_off() {
     # If it errored / completed instantly with no thinking, skip the
     # viewer and kill the drainer (otherwise it sits forever blocked on
     # opening viewer_fifo for write).
+    local viewer_shown=0
     if (( show_thinking && got_streaming )); then
+        viewer_shown=1
         zle -I
         local -a viewer_args theme_cmd
         _zsh_ai_scratch_viewer_args viewer_args
@@ -313,8 +315,17 @@ _zsh_ai_scratch_kick_off() {
     # abort the bridge — otherwise `wait` blocks until the model finishes,
     # leaving ZLE frozen with nothing on screen. Bridge gets SIGTERM;
     # bridge_err may end up empty (we treat that as "aborted by user").
+    #
+    # Gate this on the viewer having actually been shown: it's the only
+    # path where a still-running bridge means "user quit early". When we
+    # instead broke on a terminal status event (error/complete without a
+    # prior `streaming` — e.g. a 503 that never yields a chunk), the bridge
+    # is already tearing down (it writes the status line BEFORE its stderr
+    # print + finally-block exit), so a `kill -0` race here would spuriously
+    # read as an abort and swallow the bridge's non-zero rc + stderr. In
+    # that case just `wait` for it and let the rc != 0 branch surface it.
     local user_aborted=0
-    if kill -0 $bridge_pid 2>/dev/null; then
+    if (( viewer_shown )) && kill -0 $bridge_pid 2>/dev/null; then
         user_aborted=1
         kill $bridge_pid 2>/dev/null
     fi

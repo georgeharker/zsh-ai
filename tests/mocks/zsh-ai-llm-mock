@@ -8,6 +8,11 @@
 #   ZSH_AI_TEST_DELAY         — sleep N seconds before exiting (default 0)
 #   ZSH_AI_TEST_EXIT          — exit code (default 0)
 #   ZSH_AI_TEST_STDERR        — line to print to stderr (for error-path tests)
+#   ZSH_AI_TEST_NO_STREAMING  — if set, skip the 'streaming' status event, so
+#                               the only status line is the terminal one. Mirrors
+#                               a failure that arrives before any content chunk
+#                               (e.g. a 503) — the real bridge never signals
+#                               'streaming' in that case.
 #
 # All args are parsed but only --content / --thinking values are used.
 
@@ -46,7 +51,7 @@ fi
 # Status events: the widget waits on 'streaming' before launching the
 # viewer, then 'complete' on clean exit. Mirror the real bridge's shape
 # so the deferred-launch path works in tests.
-if [ -n "$status_file" ]; then
+if [ -n "$status_file" ] && [ -z "${ZSH_AI_TEST_NO_STREAMING:-}" ]; then
     printf 'streaming\n' >> "$status_file"
 fi
 
