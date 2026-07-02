@@ -122,7 +122,9 @@ _zsh_ai_scratch_question_stream() {
     # Clear the spinner line cleanly.
     print -nu2 -- $'\r\e[K'
 
+    local viewer_shown=0
     if (( show_thinking && got_streaming )); then
+        viewer_shown=1
         local -a viewer_args theme_cmd
         _zsh_ai_scratch_viewer_args viewer_args
         _zsh_ai_view_theme_cmd theme_cmd
@@ -136,9 +138,13 @@ _zsh_ai_scratch_question_stream() {
         kill $drainer_pid 2>/dev/null
     fi
 
-    # Same user-abort handling as kick_off.
+    # Same user-abort handling as kick_off — gated on the viewer having
+    # actually been shown. Without a viewer we broke on a terminal status
+    # event (e.g. an error-before-streaming 503); the bridge is already
+    # exiting, so a `kill -0` race would misread as an abort and swallow
+    # its error. Just `wait` and let the rc != 0 branch below surface it.
     local user_aborted=0
-    if kill -0 $bridge_pid 2>/dev/null; then
+    if (( viewer_shown )) && kill -0 $bridge_pid 2>/dev/null; then
         user_aborted=1
         kill $bridge_pid 2>/dev/null
     fi
