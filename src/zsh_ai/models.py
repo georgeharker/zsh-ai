@@ -67,6 +67,12 @@ def _provider_fields(name: str, p: Provider) -> list[str]:
     if p.stop:
         joined = "\x1f".join(p.stop)
         out.append(f"{_q(f'{name}:stop')} {_q(joined)}")
+    # Custom request headers: each "key=value" joined on US (0x1f), same flat-
+    # string trick as stop. lib/config.zsh splits it back and emits one --header
+    # per entry (values may carry $VAR/${uuid} — the bridge expands them).
+    if p.headers:
+        joined = "\x1f".join(f"{k}={v}" for k, v in p.headers.items())
+        out.append(f"{_q(f'{name}:headers')} {_q(joined)}")
     return out
 
 

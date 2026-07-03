@@ -17,6 +17,13 @@
 # `api_key_env`, `http_timeout` and `enable_thinking` (the http layer
 # checks the per-feature namespace first, falls back to `:zsh-ai:*`).
 #
+# `headers` is an array zstyle of extra HTTP request headers in KEY=VALUE
+# form; a TOML provider's `headers` adds to / overrides these per key. The
+# bridge owns the semantics (HTTP adapters only, $VAR / ${uuid} / ${epoch}
+# value expansion — see `zsh-ai-llm chat --help` on --header). Typical use,
+# a gateway routing key:
+#   zstyle ':zsh-ai:*' headers 'x-opencode-request=zsh-ai'
+#
 # API key resolution: if api_key_env is set, its value is treated as the
 # NAME of an environment variable whose value supplies the key. Otherwise
 # api_key is used as a raw inline string. api_key_env takes precedence
@@ -65,19 +72,15 @@ _zsh_ai_cfg_bool() {
 }
 
 # Per-feature resolver. Reads $key from the namespace named by the
-# dynamic-scoped `_zsh_ai_ctx` (e.g. ':zsh-ai:fim') first; falls back to
-# `:zsh-ai:*`; returns $default if neither is set. Used for the small set
-# of settings (endpoint, api_key, api_key_env, http_timeout,
-# enable_thinking) that can be overridden per feature.
+# dynamic-scoped `_zsh_ai_ctx` (e.g. ':zsh-ai:fim'), or `:zsh-ai:*` when no
+# feature ctx is in scope; returns $default if unset. One lookup suffices —
+# zstyle matches the query context against stored patterns, so a style set
+# under ':zsh-ai:*' is already found (and a more specific one wins) via the
+# feature context. Used for the small set of settings (endpoint, api_key,
+# api_key_env, http_timeout, enable_thinking) overridable per feature.
 _zsh_ai_resolve() {
     local key="$1" default="$2"
-    local ctx="${_zsh_ai_ctx:-}"
-    local val=""
-    if [[ -n "$ctx" ]]; then
-        val="$(_zsh_ai_cfg "$ctx" "$key" '')"
-    fi
-    [[ -z "$val" ]] && val="$(_zsh_ai_cfg ':zsh-ai:*' "$key" "$default")"
-    print -r -- "$val"
+    _zsh_ai_cfg "${_zsh_ai_ctx:-:zsh-ai:*}" "$key" "$default"
 }
 
 # Resolve the tri-state enable_thinking value. Priority:
@@ -189,7 +192,12 @@ _zsh_ai_models_load() {
     local src="$(_zsh_ai_models_file)"
     [[ -z "$src" ]] && return 1
     local cache="${XDG_CACHE_HOME:-$HOME/.cache}/zsh-ai/models.cache.zsh"
-    if [[ ! -f "$cache" || "$src" -nt "$cache" ]]; then
+    # Staleness is vs the TOML *and* the serializer: a plugin update that
+    # teaches the serializer a new field (e.g. headers) must invalidate a
+    # cache written by the old one, or the field stays silently absent until
+    # the TOML happens to be touched.
+    local gen="$_ZSH_AI_DIR/src/zsh_ai/models.py"
+    if [[ ! -f "$cache" || "$src" -nt "$cache" || "$gen" -nt "$cache" ]]; then
         mkdir -p "${cache:h}"
         local bin="${ZSH_AI_MODELS_BIN:-$_ZSH_AI_DIR/bin/zsh-ai-models}"
         if "$bin" "$src" > "$cache.tmp.$$" 2>/dev/null; then
@@ -212,31 +220,30 @@ _zsh_ai_providers() {
 }
 
 # The active profile (machine "section") for <ctx>: a `[profiles.<name>]`
-# widget→provider map chosen at startup. zstyle `:zsh-ai:<ctx>` profile →
-# `:zsh-ai:*` profile. Empty if none set (then the `default` provider applies).
+# widget→provider map chosen at startup. One lookup — a `:zsh-ai:*` profile
+# is found via the ctx query (zstyle pattern-matches), and a more specific
+# `:zsh-ai:<ctx>` profile wins. Empty if none set (then the `default`
+# provider applies).
 _zsh_ai_active_profile() {
-    local ctx="$1" p
-    p="$(_zsh_ai_cfg "$ctx" profile '')"
-    [[ -z "$p" ]] && p="$(_zsh_ai_cfg ':zsh-ai:*' profile '')"
-    print -r -- "$p"
+    _zsh_ai_cfg "$1" profile ''
 }
 
 # Per-widget default provider. Resolution, highest first:
 #   1. zstyle `:zsh-ai:<ctx>` provider_<feature>   (per-widget pin)
-#   2. zstyle `:zsh-ai:<ctx>` provider             (per-context: all scratch / fim)
-#   3. zstyle `:zsh-ai:*`     provider             (global pin)
-#   4. the active profile's [profiles.<name>] widget→provider map
-#   5. `default` (the zstyle single-backend config)
+#   2. zstyle `:zsh-ai:<ctx>` provider             (per-context pin; a style
+#      set on `:zsh-ai:*` is found by this same query — zstyle pattern-
+#      matches — with the more specific context winning)
+#   3. the active profile's [profiles.<name>] widget→provider map
+#   4. `default` (the zstyle single-backend config)
 # ctx is :zsh-ai:scratch for ask/modify/question, :zsh-ai:fim for fim. The
 # explicit `provider` zstyles let you pin per machine; the `profile` zstyle
-# (step 4) picks a whole widget→provider set at once.
+# (step 3) picks a whole widget→provider set at once.
 _zsh_ai_default_provider() {
     local feature="$1"
     local ctx=':zsh-ai:scratch'; [[ "$feature" == fim ]] && ctx=':zsh-ai:fim'
     local p
     p="$(_zsh_ai_cfg "$ctx" "provider_${feature}" '')"
     [[ -z "$p" ]] && p="$(_zsh_ai_cfg "$ctx" provider '')"
-    [[ -z "$p" ]] && p="$(_zsh_ai_cfg ':zsh-ai:*' provider '')"
     if [[ -z "$p" ]]; then
         local prof="$(_zsh_ai_active_profile "$ctx")"
         [[ -n "$prof" ]] && { _zsh_ai_models_load && p="${_ZSH_AI_PROFILE_WIDGETS[${prof}:${feature}]-}"; }
@@ -272,7 +279,7 @@ _zsh_ai_model_args() {
     local is_json=0
     [[ -n "${_ZSH_AI_PROVIDER_FIELDS[${name}:model]+x}" ]] && is_json=1
 
-    local jmodel="" jmax="" jtemp="" jep="" jake="" jak="" jth="" jadapter=""
+    local jmodel="" jmax="" jtemp="" jep="" jake="" jak="" jth="" jadapter="" jheaders=""
     if (( is_json )); then
         jmodel="${_ZSH_AI_PROVIDER_FIELDS[${name}:model]-}"
         jmax="${_ZSH_AI_PROVIDER_FIELDS[${name}:max_tokens]-}"
@@ -282,6 +289,7 @@ _zsh_ai_model_args() {
         jak="${_ZSH_AI_PROVIDER_FIELDS[${name}:api_key]-}"
         jth="${_ZSH_AI_PROVIDER_FIELDS[${name}:enable_thinking]-}"
         jadapter="${_ZSH_AI_PROVIDER_FIELDS[${name}:adapter]-}"
+        jheaders="${_ZSH_AI_PROVIDER_FIELDS[${name}:headers]-}"
     fi
 
     local -a a
@@ -308,6 +316,19 @@ _zsh_ai_model_args() {
     [[ -z "$th" ]] && th="$jth"
     [[ -z "$th" ]] && th="$(_zsh_ai_resolve_thinking)"
     a+=(--enable-thinking "$th")
+
+    # Custom request headers → --header KEY=VALUE (repeatable): the `headers`
+    # zstyle first (one lookup — zstyle pattern-matches, so a ':zsh-ai:*'
+    # style is found via $ctx), then the TOML provider's (US-joined k=v, split
+    # unquoted so an empty jheaders contributes nothing). Later --header wins
+    # per key in the bridge, so the provider overrides the zstyle.
+    local -a _zsh_ai_hdrs=()
+    zstyle -a "$ctx" headers _zsh_ai_hdrs
+    _zsh_ai_hdrs+=( ${(ps:\x1f:)jheaders} )
+    local _hdr
+    for _hdr in "${_zsh_ai_hdrs[@]}"; do
+        a+=(--header "$_hdr")
+    done
 
     set -A "$out" "${a[@]}"
     [[ -n "$model" ]]
